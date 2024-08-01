@@ -1,0 +1,1830 @@
+############################# *** README *** ###################################
+
+# BACKGROUND AND ACKNOWLEDGEMENT:
+# The overall structure of this pipeline is adapted from that found in Delavaux et al 2022 (DOI: 10.1007/s00572-022-01068-3)
+# You can access their original pipeline at: https://github.com/c383d893/AMF-LSU-Database-and-Pipeline2/tree/main (last accessed by PBJ 19/08/2023)
+# I constructed this pipeline variant as an adaptation to my own primer combination being tested and computing resources - Through working across multiple primer sets I have since further adapted it to be generically used across the different primer sets that I regularly employ in my work and to be used as a resource for collaborators.
+# As a particular change I've altered the Delavaux pipelines approach to concatenation:
+#     - The Delavaux pipeline concatenates reads from a 'long' amplicon (LROR-FLR2) that cannot be fully sequenced via illumina due to technology limitations
+#     - I chose a series of smaller amplicons (FLR3-FLR2) within / overlapping with the LROR-FLR2 region that could be fully sequenced to test its utility (don't use either lol, FLR3-FLR2 has lots of non-target amplification and FLR3-FLR4 doesn't catch the full range of AMF diversity), I am also testing my appraoch with full-length Nanopore generated LSU sequences covering the whole LROR-FLR2 amplicon.
+# In the mean time the Delavaux pipeline and database has been FURTHER updated to be even easier to use:
+#     - https://link.springer.com/content/pdf/10.1007/s00572-024-01159-3.pdf
+#     - https://github.com/c383d893/AMF-LSU-Database-and-Pipeline2
+#     - If you are using AMF LSU data (LROR-FLR2) that has been generated via Illumina sequencing it would be most sensible to follow their updated pipeline instead of mine for the necessary steps that I have ommited here, better consistency and regular updates
+#          - JUL 24: I have incorporated their newest reference database for the 2024 release
+
+# CONTACT:
+# For any questions, queries and suggestions please contact me at:
+# Philip Brailey-Jones
+# Current email: philip.braileyjones@uga.edu
+# Forever email: pbraileyjones@gmail.com
+
+# Pipeline Notes:
+# Assumes the starting demultiplexed files have the name format of *R1_001.fastq.gz and *R2_001.fastq.gz
+# All default parameters used unless specified
+
+# I have tested this pipeline with the following primer sets:
+# AMF LSU (Short)
+# Primers : FLR3 (TTGAAAGGGAAACGATTGAAGT) ; FLR2 (GTCGTTTAAAGCCATTACGTC)
+# AMF LSU (Long)
+# Primers : LROR (ACCCGCTGAACTTAAGC) ; FLR2 (GTCGTTTAAAGCCATTACGTC)
+# PROKARYOTE 16S (Short)
+# Primers : 515F(Parada) (GTGYCAGCMGCCGCGGTAA); 806R(Appril) (GGACTACNVGGGTWTCTAAT)
+# FUNGAL ITS (Short)
+# Primers : fITS7 (GTGARTCATCGAATCTTTG) ; ITS4 (TCCTCCGCTTATTGATATGC)
+
+# A quote from the indomitable Ina Garten, "This is what i do, you can do whatever the fuck you want"
+# I know that this is overly long for a README file and they shouldn't really include the scripts that are being called but I personally struggle to follow the process If i can't read it like a recipe and write it like a diary.
+# This file therefore contains all scripts (except R script which bugs out my text editor) that you need to re-run my personal analysis pipeline step-by-step if your brain works like mine.
+# R scripts are present as separate files in the same repository
+# I will make an additional TL;DR file that removes the .sh scripts at some point...
+
+################################################################################
+########################### REQUIRED PROGRAMS ##################################
+################################################################################
+
+# PBJ: Program versions updated AUG 2023
+# Programs are available on UGA Sapelo2 GACRC Server- Your own may differ so bare this in mind
+
+# QIIME2/2023.2
+# cutadapt/3.4-GCCcore-8.3.0-Python-3.7.4
+# FastQC/0.12.1-Java-11
+# R/4.3.0-foss-2020b
+# BLAST+/2.12.0-gompi-2020b
+
+################################################################################
+########################### REQUIRED R PACKAGES ################################
+################################################################################
+
+#Program versions updated AUG 2023 running R 4.3.0
+
+# dada2 v1.28.0
+# ShortRead v1.58.0
+# Biostrings v2.68.1
+# stringr v1.5.0
+# ape v5.7.1
+# TreeTools
+
+################################################################################
+########################### DIRECTORY STRUCTURE ################################
+################################################################################
+
+########################### Common directories #################################
+
+# These directories will be shared across all implementations of this pipeline regardless of primers set
+# All paths are relative to the working directory (.)
+# The majority of these directories will be made as part of the pipeline so you do not need to make them yourself here
+
+# Directory for all scripts that you will use
+# You can download this file from my gitHub repository and it will contain the whole gamut
+mkdir -p ./scripts/
+
+# Directory for all output and error files
+# Some steps where parralelization is used will create additional subdirectories themselves to not fill up this directory
+mkdir ./slurmoutputs
+
+# Directory for raw sequence input data:
+# You WILL need to make and populate this directory with your raw files, everything else can be made later
+mkdir -p ./raw${run}/ # If you are working with multiple runs add in your runID here
+
+# Directory for primer-trimmed sequence data from cutadapt
+mkdir -p ./trimmed/
+# ./trimmed/${dataset}${run}
+#      You will make another subdirectory specific to every dataset / primer set that you are working with, and again considering every run
+# ./trimmed/${dataset}${run}rc
+#      If you are following the pipeline variant where you also trim the reverse complement of your primers you will need a subdirectory to hold these further trimmed sequences
+
+# Directory for fastQC output files:
+mkdir -p ./fastqcoutput/
+
+# Directory to hold per sample total read counts
+mkdir -p ./readcounts
+
+# Directory for truncated + quality-filtered data from the dada2.R script
+mkdir -p ./filtered/
+# ./filterd/${dataset}${run}${rc}
+#     You will make a subdirectory specific to every dataset / primer set that you are working with, and again considering every run, and whether you trimmed reverse complements
+
+# Directory for dada2 outputs (ASV tables, FASTA files, biom files made from them)
+mkdir -p ./dada2output # Directory that holds all dada2 output files
+# ./dada2output/{dataset} # Subdirectory to hold output files relevant to each dataset
+#     You will make a subdirectory specific to every dataset / primer set you will be working with. Outputs from all runs will be put in the same sub-directory at this point as they are given names unique to their run.
+
+# Directory for qiime2 intermediate files and outputs
+mkdir -p ./q2files/ # Directory that holds all q2 files
+# ./q2files/${outdir} # Sub-directory to hold intermediate files relevatnt ot each dataset
+# ./q2files/${outdir}/outputfiles/  # Sub-directory to hold output files relevant to each dataset
+
+# Directory for constructed phylogenetic trees
+mkdir -p ./phylogeny/ # Directory that holds all tree construction outputs
+# ./phylogeny/$dataset/ # Sub-directory to hold output files relevant to each dataset
+
+# Directory to hold constax2 outputs
+mkdir -p constaxtaxonomy # Directory to hold all constax2 intermediate files and output
+# ./constaxtaxonomy/${dataset} # Sub-directory to hold files specific to each dataset
+
+# Directory to hold a set of final OTU, FASTA, PHYLOGENY and TAXONOMY FILES that can be easily downloaded for analyses
+mkdir -p ./finaloutputs/ # Directory to hold all final outputs
+# ./finaloutputs/${dataset} # Sub-directory to hold final outputs specific to each dataset
+
+########################### BACTERIA 16S directories ###########################
+
+# Directory to hold greengenes2 intermediate and output files
+mkdir -p ./gg2taxonomy/
+
+################################################################################
+################################## SCRIPTS #####################################
+################################################################################
+
+############################### Common scripts #################################
+
+# All paths are relative to the working directory (.)
+# You will very likely need to check that your high performance cluster has the programs in the correct version
+
+# Bash scripts to run on SLURM
+ ./scripts/cutadapt.sh # This script trims FWD/REV primers from your sequences using cutadapt
+ ./scripts/cutadaptrc.sh # This script trims the FWD RC from the REV (R2) sequence read, and the REV RC from the FWD (R1) sequence read using cutadapt
+ ./scripts/countreads.sh # This script counts the number of sequence reads found in each .fastq.qz file in a folder
+ ./scripts/fastqc.sh # This script carries out fastqc quality assessment
+ ./scripts/dada2denoise.sh # This script calls dada2.R to carry out additional quality filtering, dereplication and denoising of sequences
+ ./scripts/mergeasvtabs.sh # This script merges ASV tables generated by 'dada2denoise.sh' from different sequencing runs
+ ./scripts/renameasvs.sh # This script replaces 'mergeasvtab.sh' when your data all comes from a single run, creating the same downstream file name structure without merging any run files
+ ./scripts/customdbimport.sh # Not technically common, but also not specific to any one pipeline. This script is used to convert any database fasta file into a qiime2 readable format
+ ./scripts/openrefotu.sh # This script carries out open-reference OTU calling and abundance-threshold filtering for sequences and samples
+ ./scripts/asvfilter.sh # This script replaces 'openrefotu.sh' in non-OTU based pipelines, creating the same downstream files but maintaining ASVs
+ ./scripts/headercleanup.sh # This script cleans up sample names to contain only the experimental ID and not any sequence run information
+ ./scripts/alignseqs.sh # This script aligns sequences against a reference database using mafft
+ ./scripts/buildtree.sh # This script uses alignments from 'alignseqs.sh' to construct a phylogenetic tree using RAxML
+ ./scripts/constax2.sh # This script assigns a consensus taxonomy to sequences using constax2
+
+# R scripts
+ ./dada2. # Called by dada2denoise.sh
+ ./mergeasvtabs.R # Called by mergeasvtabs.sh
+ ./renameasvs.R # Called by renameasvs.sh
+
+############################# AMF LSU scripts ##################################
+
+# Bash scripts to run on SLURM
+ ./scripts/amfblast.sh # This script BLASTs experimental sequences against a reference database and removes those with scores below an appropriate threshold
+ ./scripts/amfcladeextract.sh # This script imports phylogenetic trees generated by 'buildtree.sh' and remvoes sequences which do not sit within the AMF clade on the tree
+
+# R scripts
+ ./AMFcladeExtract.R # Called by amfcladeextract.sh
+
+########################## BACTERIA 16S scripts ################################
+
+# Bash scripts to run on SLURM
+ ./greengenes2.sh # This script aligns 16S sequences against the greengenes2 database and uses this to decorate the sequences onto a backbone tree. It then uses phylogenetic placement on the tree to assign a taxonomic identity to the sequences.
+
+################################################################################
+########################## REFERENCE DATABASES #################################
+################################################################################
+
+################################ AMF LSU #######################################
+
+# Delavaux LSU files:
+# DOI: 10.1007/s00572-022-01068-3
+# Downloadable from GitHub: https://github.com/c383d893/AMF-LSU-Database-and-Pipeline
+./delavauxlsu/V15_LSUDB_3.23.21.fasta.                              # Reference database
+./delavauxlsu/V15_LSUDB_3.23.21_AMFONLY.fasta                       # AMF only reference database
+./delavauxlsu/Root_V15_LSUDB-1000BS-GTRGAMMA-bootstrap-tree.newick  # Backbone tree
+
+
+# I have also personally curated this database to be:
+# dada2-R taxonomy compatible (naive bayesian classification)
+ ./delavauxlsu/
+# UNITE formatted
+ ./delavauxlsu/delavauxlsu.DATE_UNITEFORMAT.fasta
+ # For the Delavaux LSU pipeline NNNNNs are added to various sequences to facilitate alignment and tree building, I have removed them for purposes of taxonomic identification
+
+################################ AMF 18S #######################################
+
+# MAARJAM database files:
+# MAARJAM has multiple databases to work with depending on your primer set.
+# They can be downloaded from the MAARJAM website: https://maarjam.ut.ee/?action=bDownload
+# For open reference OTU clustering I would use the complete sequence database
+ ./maarjam18s/maarjam_database_SSU.fasta # 2021 release accessed JUL 24
+# For BLAST-based filtering I would use the Type sequence database
+ ./maarjam18s/maarjam_database_SSU_TYPE.fasta # 2021 release accessed JUL 24
+
+# I have also personally curated this database to be:
+# dada2-R taxonomy compatible (naive bayesian classification)
+ ./maarjam18s/maarjamssu.2021_dada2.FASTA
+# UNITE formatted
+ ./maarjam18s/maarjamssu.2021_UNITEFORMAT.fasta
+
+############################# BACTERIA 16S #####################################
+
+
+
+############################## FUNGAL ITS ######################################
+
+
+
+################################################################################
+################################################################################
+########################## CUTADAPT PRIMER REMOVAL #############################
+############################### AND LIBRARY QC #################################
+################################################################################
+################################################################################
+
+# We first need to trim the primers from either end of our amplicons- this serves two purposes:
+#    1. Demultiplexes pooled amplicon libraries (where used) into single amplicon libraries
+#    2. Primer sequences DO NOT necessarily match the actual species sequence- they will still amplify with some mismatches but will 'correct' those mismatches across multiple cycles so do not represent 'true' sequences. Removing them is integral to accurate species / ASV / OTU delineation.
+
+# I often find myself doing small-batch resequencing of failed samples, so have written this pipeline to handle both single runs and multiple run experiments
+# Cutadapt trimming runs in parralel individually for each sample to speed things up
+
+########### Run 1 cutadapt trimming
+
+# If needed you can use the following to count how many fastq files you have in each run
+cd ./rawrun1/ # Move into the directory containing the raw sequences
+ls -1 | wc -l
+cd ../ # Move back into the working directoryinput
+# The number of samples will be HALF of this count (accounting for FWD and REV reads which will be processed together by cutadapt)
+
+5 = 60
+10 = 60
+15 = 40
+
+
+# Number of samples for parallelization
+nSamples=288 #Y1P run 1
+nSamples=288 #XRHIZ run 1
+nSamples=269 #XIOMY FUNGUS EXPERIMENT
+nSamples=1010 # Y2GAGWAS
+
+# Dataset specific inputs:
+# $fwdprimer: Your forward primer of choice
+# $revprimer : Your reverse primer of choice
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'
+# $run : Your run identity, if you only have one run then you can leave this input blank, and it will not add any run information to the output files e.g. 'run=', do not remove the 'run' export command
+
+# Submit batch script
+# LSU AMF (FWD: FLR3, REV: FLR4)
+sbatch --export=fwdprimer=TTGAAAGGGAAACGATTGAAGT,revprimer=GTCGTTTAAAGCCATTACGTC,dataset=amflsu,run=run1 --array=1-$nSamples%10 ./scripts/cutadapt.sh
+# LSU AMF (FWD: LROR, REV: FLR2)
+sbatch --export=fwdprimer=ACCCGCTGAACTTAAGC,revprimer=GTCGTTTAAAGCCATTACGTC,dataset=amflsu,run=run1 --array=1-$nSamples%10 ./scripts/cutadapt.sh
+# ITS FUNGI (FWD : fITS7, REV: ITS4)
+sbatch --export=fwdprimer=GTGARTCATCGAATCTTTG,revprimer=TCCTCCGCTTATTGATATGC,dataset=funits,run=run1 --array=1-$nSamples%10 ./scripts/cutadapt.sh
+# 16S BAC (FWD : 515F Parada, REV: 806R Appril)
+sbatch --export=fwdprimer=TGTGYCAGCMGCCGCGGTAA,revprimer=GGACTACNVGGGTWTCTAAT,dataset=bac16s,run=run1 --array=1-$nSamples%10 ./scripts/cutadapt.sh
+
+########### Run 2 cutadapt trimming
+
+# Number of samples for parallelization
+nSamples=84 #Y1P run 2
+nSamples=50 #XRHIZ run 2
+
+# Submit batch script
+# LSU AMF (FWD: FLR3, REV: FLR4)
+sbatch --export=fwdprimer=TTGAAAGGGAAACGATTGAAGT,revprimer=GTCGTTTAAAGCCATTACGTC,dataset=amflsu,run=run2 --array=1-$nSamples%10 ./scripts/cutadapt.sh
+# 16S BAC (FWD : 515F Parada, REV: 806R Appril)
+sbatch --export=fwdprimer=TGTGYCAGCMGCCGCGGTAA,revprimer=GGACTACNVGGGTWTCTAAT,dataset=bac16s,run=run2 --array=1-$nSamples%10 ./scripts/cutadapt.sh
+
+########### Run 3 cutadapt trimming
+
+# Number of samples for parallelization
+nSamples=28 # XRHIZ run 3 LSU only
+
+# Submit batch script
+# LSU AMF (FWD: FLR3, REV: FLR4)
+sbatch --export=fwdprimer=TTGAAAGGGAAACGATTGAAGT,revprimer=GTCGTTTAAAGCCATTACGTC,dataset=amflsu,run=run3 --array=1-$nSamples%10 ./scripts/cutadapt.sh
+
+------------------------- cutadapt.sh start ------------------------------------
+
+#!/bin/bash
+#SBATCH
+#SBATCH --array=1-2%10
+#SBATCH --partition=iob_p
+#SBATCH --job-name=cutadapt
+#SBATCH --job-name=cutadapt
+#SBATCH --ntasks=10
+#SBATCH --cpus-per-task=16
+#SBATCH --time=4:00:00
+#SBATCH --mem=40GB
+#SBATCH --output=./slurmoutputs/cutadapt/cutadapt.%a.out
+#SBATCH --error=./slurmoutputs/cutadapt/cutadapt.%a.out
+#SBATCH --mail-type=END
+
+# Script to trim primer sequences from the amplicons using cutadapt
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./trimmed${dataset}${run}/ # to hold trimmed sequence files
+# ./slurmoutputs/cutadapt/ # to hold output overviews
+# Assumes raw sequence data is held in a folder with the following structure:
+# ./raw${run}
+
+# Make a directory to put the trimmed samples in
+mkdir -p ./trimmed/ # Base directory for trimmed files
+mkdir -p ./trimmed/${dataset}${run} # Specific folder to put trimmed files from each run
+
+# Get input file names (paired forward/reverse reads)
+FWD=`ls ./raw${run}/ | grep "_R1_" | head -n $SLURM_ARRAY_TASK_ID | tail -1` # forward read
+REV=`echo $FWD | sed 's/_R1_/_R2_/'` # paired reverse read
+
+# Extract sample name from the full input filename:
+SAMPLE=$(echo ${FWD} | sed "s/_R1_\001\.fastq.gz*//")
+
+# Load cutadapt
+# Current version (APRIL 24) on GACRC
+module load cutadapt/4.5-GCCcore-11.3.0
+
+# Trim primers
+### Input comes from ./raw${run}
+### Output goes into ./trimmed/${dataset}${run}/ subdirectory
+### Reads with no primer matches get discarded
+
+#Cutadapt script
+cutadapt -g $fwdprimer \
+ -G $revprimer \
+ --discard-untrimmed \
+ --output=./trimmed/${dataset}${run}/${SAMPLE}_R1.fastq.gz \
+ --paired-output=./trimmed/${dataset}${run}/${SAMPLE}_R2.fastq.gz \
+ ./raw${run}/$FWD \
+ ./raw${run}/$REV
+
+--------------------------- cutadapt.sh end ------------------------------------
+
+# Some amplicon libraries may contain sequences that are SHORTER than the full sequencing length of your machine, in this case they will be fully through-sequenced into the adapter regions which will complicate downstream processes
+#     e.g., The FLR3-FLR2 PCR specifically generates off-target amplification of non-AMF fungal sequences that are shorter in length (Learn from me and do not use this primer set in your studies lol)
+# If you view this through fastqc it will show that a very large number of sequences appear to contain adapters...
+# To combat this we will also cut the reverse complement from the sequences so that adapter sequences are not incidentally included in downstream analysis
+
+########### Run 1 cutadapt rc trimming
+
+# Number of samples for parallelization
+nSamples=288
+nSamples=96 #XRHIZ run 1
+
+# Dataset specific inputs:
+# $fwdprimer: The REVERSE COMPLEMENT of your forward primer of choice
+# $revprimer : The REVERSE COMPLEMENT of your reverse primer of choice
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#         - This should carry through all instances of use
+# $run : Your run identity, if you only have one run then you can leave this input blank, and it will not add any run information to the output files e.g. 'run=', do not remove the 'run' export command
+
+# Submit batch script
+# LSU AMF (FWD: FLR3, REV: FLR4)
+sbatch --export=fwdprimer=ACTTCAATCGTTTCCCTTTCAA,revprimer=GACGTAATGGCTTTAAACGAC,dataset=amflsu,run=run1 --array=1-$nSamples%10 ./scripts/cutadaptrc.sh
+
+########### Run 2 cutadapt rc trimming
+
+# Number of samples for parallelization
+nSamples=84 #Y1Pilot run2
+nSamples=30 #XRHIZ run 2
+
+# Submit batch script
+# LSU AMF (FWD: FLR3, REV: FLR4)
+sbatch --export=fwdprimer=ACTTCAATCGTTTCCCTTTCAA,revprimer=GACGTAATGGCTTTAAACGAC,dataset=amflsu,run=run2 --array=1-$nSamples%10 ./scripts/cutadaptrc.sh
+
+########### Run 3 cutadapt rc trimming
+
+# Number of samples for parallelization
+nSamples=28 # XRHIZ run 3
+
+# Submit batch script
+# LSU AMF (FWD: FLR3, REV: FLR4)
+sbatch --export=fwdprimer=ACTTCAATCGTTTCCCTTTCAA,revprimer=GACGTAATGGCTTTAAACGAC,dataset=amflsu,run=run3 --array=1-$nSamples%10 ./scripts/cutadaptrc.sh
+
+------------------------ cutadaptrc.sh start -----------------------------------
+
+#!/bin/bash
+#SBATCH
+#SBATCH --array=1-2%10
+#SBATCH --partition=iob_p
+#SBATCH --job-name=cutadaptrc
+#SBATCH --job-name=cutadaptrc
+#SBATCH --ntasks=10
+#SBATCH --cpus-per-task=16
+#SBATCH --time=4:00:00
+#SBATCH --mem=20GB
+#SBATCH --output=./slurmoutputs/cutadaptrc/cutadaptrc.%a.out
+#SBATCH --error=./slurmoutputs/cutadaptrc/cutadaptrc.%a.out
+#SBATCH --mail-user=pab14613@uga.edu
+#SBATCH --mail-type=END
+
+# Script to trim the reverse complement of primer sequences from the amplicons using cutadapt
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./trimmed${dataset}${run}RC/ # to hold trimmed sequence files
+# ./slurmoutputs/cutadapt/ # to hold output overviews
+# Assumes round 1 trimmed data is held in a folder with the following structure:
+# ./trimmed${dataset}${run}/
+
+# Make a directory to put the RC trimmed samples in if needed
+mkdir -p ./trimmed/${dataset}${run}rc
+
+# Get input file names (paired forward/reverse reads)
+FWD=`ls ./trimmed/${dataset}${run}/ | grep "_R1." | head -n $SLURM_ARRAY_TASK_ID | tail -1` # forward read
+REV=`echo $FWD | sed 's/_R1./_R2./'` # paired reverse read
+
+# Extract sample name from the full input filename:
+SAMPLE=$(echo ${FWD} | sed "s/_R1.fastq.gz//")
+
+# Load cutadapt
+# Current version (APRIL 24) on GACRC
+module load cutadapt/4.5-GCCcore-11.3.0
+
+### Trim primers
+### Input comes from ./trimmed/${dataset}${run}
+### Output goes into ./trimmed/${dataset}${run}rc/ subdirectory
+
+# Trim FLR2 RC from R1 and remove any reads that match
+cutadapt -a $revprimer \
+ --output=./trimmed/${dataset}${run}rc/${SAMPLE}_R1.fastq.gz \
+ ./trimmed/${dataset}${run}/$FWD
+
+# Trim FLR3 RC from R2 and remove reads that match
+cutadapt -a $fwdprimer \
+ --output=./trimmed/${dataset}${run}rc/${SAMPLE}_R2.fastq.gz \
+ ./trimmed/${dataset}${run}/$REV
+
+------------------------ cutadaptrc.sh end -------------------------------------
+
+# Now let's count the remaining reads rather than relying on individually checking the output files...
+
+# Dataset specific inputs:
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#         - This should carry through all instances of use
+# $run : Your run identity, if you only have one run then you can leave this input blank, and it will not add any run information to the output files e.g. 'run=', do not remove the 'run' export command
+# $RC : A value stating whether your sequences have also been reverse complement untrimmed
+#         - If yes 'RC=rc'
+#         - if no 'RC ='
+
+# Run batch scripts for forward and reverse reads
+sbatch --export=dataset=amflsu,run=run1,RC=rc scripts/countreads.sh
+sbatch --export=dataset=amflsu,run=run2,RC=rc scripts/countreads.sh
+sbatch --export=dataset=amflsu,run=run3,RC=rc scripts/countreads.sh
+sbatch --export=dataset=amflsu,run=run1,RC= scripts/countreads.sh
+sbatch --export=dataset=amflsu,run=run2,RC= scripts/countreads.sh
+sbatch --export=dataset=amflsu,run=run3,RC= scripts/countreads.sh
+
+sbatch --export=dataset=funits,run=run1,RC= scripts/countreads.sh
+sbatch --export=dataset=bac16s,run=run1,RC= scripts/countreads.sh
+sbatch --export=dataset=bac16s,run=run2,RC= scripts/countreads.sh
+
+
+# When dealing with datasets that did NOT require a RC trim, you can omit the RC from both the sbatch input and script, or just the sbatch command with the same outcome
+
+--------------------------- countreads.sh start --------------------------------
+
+#!/bin/bash
+#SBATCH --job-name=countreads
+#SBATCH --partition=iob_p
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=10G
+#SBATCH --time=30:00
+#SBATCH --output=./slurmoutputs/countreads.out
+#SBATCH --error=./slurmoutputs/countreads.out
+#SBATCH --mail-user=pab14613@uga.edu
+#SBATCH --mail-type=END
+
+# Script to count the number of reads per sample
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./readcounts/
+# Assumes trimmed data is held in a folder with the following structure:
+# ./trimmed/${dataset}${run}${RC}/
+# This can be run for both normal trimmed and reverse complement trimmed data from the pipeline
+
+# Make a directory to put the read count files
+mkdir -p ./readcounts/
+
+# Set the directory where the trimmed 'fastq.gz' files are located
+
+input_dir="./trimmed/${dataset}${run}${RC}/"
+
+# Define the output file for the summary table
+
+output_file="./readcounts/countsummary_${dataset}${run}${RC}.csv"
+
+# Create a header for the output CSV file
+
+echo "Sample Name,Read Count" > "$output_file"
+
+# Iterate over the 'fastq.gz' files in the directory
+
+for file in "$input_dir"/*.fastq.gz; do
+
+	# Extract the sample name from the file name
+
+	sample_name=$(basename "$file" | sed 's/\.fastq\.gz//')
+
+	# Use zcat to extract the contents of the gzipped file and count the lines (reads), subtract 1 to account for the header
+
+	read_count=$(zcat "$file" | wc -l)
+
+	# Calculate the actual read count
+
+	read_count=$((read_count / 4))
+  # We divide by 4 because one fastq read comprises of 4 lines: 1) identifier, 2) sequence, 3) blank ("starts with a '+', may contain the same info as line 1", 4) sequence quality scores)
+
+	# Append the sample name and read count to the output CSV file
+
+	echo "$sample_name,$read_count" >> "$output_file"
+
+done
+
+echo "Read count summary has been saved to $output_file"
+
+--------------------------- countreads.sh end ----------------------------------
+
+# At this point you may wish to clean up your trimmed directory moving into the denoising of samples through dada2
+# One potential source of errors when running the dada2 part of the pipeline is if you use samples that WILL HAVE ALL SEQUENCES REMOVED BY THE INITIAL QUALITY FILTERING then downstream steps such as the tracking table creation will get funky!
+# This may need to be an iterative approach to run the pipeline once and then redo with the failed samples removed, but generally you can tell when something is going to fail (e.g. < 100 sequences)
+
+rm ./trimmed/${MY_BAD_SAMPLE_THAT_IVE_DETERMINED_FROM_THE_COUNTREADS_OUTPUT_FILE}
+
+# Assess whole-dataset filtered sequence quality using fastq
+
+# Dataset specific inputs:
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#         - This should carry through all instances of use
+# $run : Your run identity, if you only have one run then you can leave this input blank, and it will not add any run information to the output files e.g. 'run=', do not remove the 'run' export command
+# $RC : A value stating whether your sequences have also been reverse complement untrimmed
+#         - If yes 'RC=rc'
+#         - if no 'RC ='
+
+sbatch --export=dataset=amflsu,run=run1,RC=rc scripts/fastqc.sh
+sbatch --export=dataset=amflsu,run=run2,RC=rc scripts/fastqc.sh
+sbatch --export=dataset=amflsu,run=run1,RC= scripts/fastqc.sh
+sbatch --export=dataset=amflsu,run=run2,RC= scripts/fastqc.sh
+
+---------------------------- fastqc.sh start -----------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=fastqc
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=64
+#SBATCH --time=1:00:00
+#SBATCH --mem=50G
+#SBATCH --output=./slurmoutputs/fastqc.out
+#SBATCH --error=./slurmoutputs/fastqc.out
+#SBATCH --mail-user=pab14613@uga.edu
+#SBATCH --mail-type=END
+
+# Script to perform an aggregate quality check of sequences
+# Fastqc is really for shotgun metagenomic style data so amplicon outputs violate some stuff but it's more to see a) quality drop off by length b) adapter presence
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./fastqcoutput/
+# ./fastqcoutput/${dataset}${run}${RC}/
+# Assumes trimmed data is held in a folder with the following structure:
+# ./trimmed/${dataset}${run}${RC}/
+# This can be run for both normal trimmed and reverse complement trimmed data from the pipeline
+
+# load module
+module load FastQC/0.11.9-Java-11 #PBJ: Sep 2023 current version on Sapelo2
+
+# Make the necessary folders for data output
+mkdir -p ./fastqcoutput
+mkdir -p ./fastqcoutput/${dataset}${run}${RC}/
+
+# generate fastQC summaries for R1 and R2:
+zcat ./trimmed/${dataset}${run}${RC}/*R1.fastq.gz | fastqc -t 64 -o ./fastqcoutput/${dataset}${run}${RC}/ stdin:R1
+zcat ./trimmed/${dataset}${run}${RC}/*R2.fastq.gz | fastqc -t 64 -o ./fastqcoutput/${dataset}${run}${RC}/ stdin:R2
+
+------------------------------ fastqc.sh end -----------------------------------
+
+# Download fastqc outputs (./fastQCoutput/*.html) and view. You can use the quality drop-off to determine where / if you might want to trim your sequences to avoid the nasty bits
+
+################################################################################
+################################################################################
+################################### DADA2 ######################################
+############################## ASV GENERATION ##################################
+################################################################################
+################################################################################
+
+# dada2 is used to further quality filter, dereplicate and denoise the sequences
+# Denoising is carried separately for each run that we did because they will need different error rate calculations per sequencing run
+
+# The batch script can be run with different sequence length cut-offs which can be determined by quality drop-off observed in the fastqc steps
+# You can also determine a minumum length of sequences- useful if you are expecting spurious off-targets below a known sequence length
+# In the same vein, some primer processing pipelines where amplicons may be shorter than the sequencer length (e.g., FLR3-FLR2) have also been reverse complement trimmed and have a different file path which can be accounted for in the submitted script.
+
+# Dataset specific inputs:
+# $R1cutoff : The sequence length that you want to cut your FWD/R1 sequences at
+# $R2cutoff : The sequence length that you want to cut your REV/R2 sequences at
+# $minlen : This is a cutoff for the minimum length of sequences that will be kept after quality filtering, useful if you are expecting off-target amplification at a shorter length
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#         - In this case we merge the $dataset and $run information into one parameter, if you have only one run you do not need to do this just use your usual dataset name
+# $RC : A value stating whether your sequences have also been reverse complement untrimmed
+#         - If yes 'RC=rc'
+#         - if no 'RC ='
+# $directoryinput : This is your dataset name (without any run information) used in previous steps, which is where all dada2 outputs for the dataset across multiple possible sequencing runs will be put
+
+# Run batch script to call R scripts and carry out dada2 ASV generation
+sbatch --export=R1cutoff=250,R2cutoff=250,dataset=amflsurun1,RC=rc,minlen=250,directoryinput=amflsu ./scripts/dada2denoise.sh
+sbatch --export=R1cutoff=250,R2cutoff=250,dataset=amflsurun2,RC=rc,minlen=250,directoryinput=amflsu ./scripts/dada2denoise.sh
+sbatch --export=R1cutoff=250,R2cutoff=250,dataset=amflsurun3,RC=rc,minlen=250,directoryinput=amflsu ./scripts/dada2denoise.sh
+sbatch --export=R1cutoff=250,R2cutoff=250,dataset=bac16srun1,RC=,minlen=100,directoryinput=bac16s ./scripts/dada2denoise.sh
+sbatch --export=R1cutoff=250,R2cutoff=250,dataset=bac16srun2,RC=,minlen=100,directoryinput=bac16s ./scripts/dada2denoise.sh
+sbatch --export=R1cutoff=0,R2cutoff=0,dataset=funitsrun1,RC=,minlen=100,directoryinput=funits ./scripts/dada2denoise.sh
+
+#Y2GAGWAS
+sbatch --export=R1cutoff=250,R2cutoff=250,dataset=amflsu,run=run1,RC=,minlen=200,outdir=amflsu,concatenate=true ./scripts/dada2denoise.sh
+
+------------------------ dada2denoise.sh start ---------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=dada2denoise
+#SBATCH --ntasks=1
+#SBATCH --time=24:00:00
+#SBATCH --mem=200G
+#SBATCH --output=./slurmoutputs/dada2denoise.out
+#SBATCH --error=./slurmoutputs/dada2denoise.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=128
+#SBATCH --mail-type=END
+
+#PBJ: Aug 2023 versions of software on GACRC
+module purge
+module load R/4.3.1-foss-2022a
+
+# Script to perform an aggregate quality check of sequences
+# Fastqc is really for shotgun metagenomic style data so amplicon outputs violate some stuff but it's more to see a) quality drop off by length b) adapter presence
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./fastqcoutput/
+# ./fastqcoutput/${dataset}${run}${RC}/
+# Assumes trimmed data is held in a folder with the following structure:
+# ./trimmed/${dataset}${run}${RC}/
+# This can be run for both normal trimmed and reverse complement trimmed data from the pipeline
+
+# Make the necessary directories to hold the outputs
+mkdir -p ./dada2output/
+mkdir -p ./filtered/
+mkdir -p ./filtered/${dataset}${run}${RC}
+mkdir -p dada2output/${outdir}
+
+# Replace placeholder text in R script with user-provided truncation lengths for R1 and R2: DADA2
+
+cat ./scripts/dada2.R | sed "s/R1trunclen.value.input/$R1cutoff/" | sed "s/R2trunclen.value.input/$R2cutoff/" | sed "s/minlen.value.input/$minlen/" | sed "s/dataset.value.input/$dataset/" | sed "s/concat.value.input/$concatenate/"  | sed "s/run.value.input/$run/" | sed "s/rc.value.input/$RC/" | sed "s/outdir.value.input/$outdir/" > ./scripts/dada2withCutoffs$dataset.R
+
+# Run DADA2 pipeline
+
+echo;echo "Beginning DADA2 pipeline..."
+
+Rscript ./scripts/dada2withCutoffs$dataset.R
+
+echo;echo "DADA2 pipeline complete"
+
+rm scripts/dada2withCutoffs$dataset.R # remove temporary script once it's done running
+
+# Now lets move everything we just made to a new directory
+
+mv ./dada2output/*${dataset}* ./dada2output/${outdir}/
+
+# We've made a LOT of files up to this point which we should clean up to save space
+# Remove cutadapt trimmed files
+rm -r ./trimmed/${dataset}${run}${RC}
+# Remove filtered files
+rm -r ./filtered/${dataset}${RC}
+
+-------------------------- dada2denoise.sh end ---------------------------------
+
+# You have now generated an ASV table and a FASTA file of denoised sequences.
+# These require further processing before moving on to the next steps:
+#   1. ASV labels are currently the same as the ASV sequence, we will relabel them for easier tracking and downstream analysis/visualizations
+#   2. A biom file must be exported from the asv table .tsv file to be used in downstream qiime2 processes
+#   3. Some pipelines require different sequence runs to be merged before carrying out 1. or 2.
+#   4. When working with incredibly large datasets (as is becoming  more common) it may also be necessary to break up your samples into 'chunks' to be handled computationally, even if they are from the same sequence run.
+#           - Datasets broken into chunks can be merged in the same fashion as those from different runs
+
+
+# Dataset specific inputs:
+# $directoryinput : This is your $dataset name (without any $run information) used in previous steps, which is where all dada2 outputs for the dataset across multiple possible sequencing runs were put
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#         - We use this if you have only one run and are running the 'renameasvs.sh' script
+# $dataset1 and $dataset2 : Your unique dataset name used for each run from the dada2 denoising step
+#         - In this case we merge the $dataset and $run information into one parameter
+#         - We use these if we have >1 run and are running the 'mergeasvtabs.sh' script
+# $runcount : How many runs you will be merging
+#         - if $runcount=1 it will still output the necessary downstream files without any merging
+
+# Run batch script
+sbatch --export=directoryinput=amflsu,dataset1=amflsurun1,dataset2=amflsurun2,dataset3=amflsurun3,dataset4=,runcount=3 scripts/mergeasvtabs.sh # XRHIZ
+sbatch --export=directoryinput=amflsu,dataset1=amflsurun1,dataset2=amflsurun2,dataset3=,dataset4=,runcount=2 scripts/mergeasvtabs.sh # Y1Pilot
+sbatch --export=directoryinput=funits,dataset1=funitsrun1,dataset2=,dataset3=,runcount=1,dataset4= scripts/mergeasvtabs.sh
+sbatch --export=directoryinput=bac16s,dataset1=bac16srun1,dataset2=bac16srun2,dataset3=,runcount=1,dataset4= scripts/mergeasvtabs.sh
+
+# If you only have 1 sequence table use this script to perform asv relabeling and biom export
+# Run batch script
+sbatch --export=directoryinput=amflsu,dataset=amflsurun1 scripts/renameasvs.sh
+
+sbatch --export=directoryinput=funits,dataset1=funits,dataset2=,dataset3=,runcount=1,dataset4= scripts/mergeasvtabs.sh
+
+
+
+# Y2GAGWAS- I had to break this into 20 chunks
+
+
+------------------------- mergeasvtabs.sh start --------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=mergeasvtabs
+#SBATCH --ntasks=1
+#SBATCH --time=30:00
+#SBATCH --mem=20G
+#SBATCH --output=./slurmoutputs/mergeasvtabs.out
+#SBATCH --error=./slurmoutputs/mergeasvtabs.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+
+# Script to merge ASV tabs from multiple sequencing runs and export a biom file + the csv and tsv files needed for downstream analyses
+# Fastqc is really for shotgun metagenomic style data so amplicon outputs violate some stuff but it's more to see a) quality drop off by length b) adapter presence
+# Assumes we are in the working directory (./)
+# Requires the necessary sub-directory made in previous steps::
+# ./dada2output/
+# Assumes that ASV tables are held in a folder with the following structure:
+# ./dada2output/ASVtable${dataset1} # ASV table 1
+# ./dada2output/ASVtable${dataset2} # ASV table 2
+
+#PBJ: Aug 2023 versions of software on GACRC
+module purge
+module load R/4.3.1-foss-2022a
+
+echo;echo "Beginning DADA2 seqtab merging..."
+
+# Replace placeholder text in R script with user-provided truncation lengths for R1 and R2: DADA2
+
+cat ./scripts/mergeasvtabs.R | sed "s/dataset1/${dataset1}/" | sed "s/dataset2/${dataset2}/" | sed "s/dataset3/${dataset3}/" | sed "s/dataset4/${dataset4}/" | sed "s/runcount.value.input/${runcount}/" | sed "s/directoryinput/${directoryinput}/"  > ./scripts/mergeasvtabs${directoryinput}.R
+
+
+Rscript ./scripts/mergeasvtabs${directoryinput}.R
+
+echo;echo "DADA2 seqtab merging complete. Converting output files to Qiime format..."
+
+rm scripts/mergeasvtabs$directoryinput.R # remove temporary script once it's done running
+
+# Now let's export a biom file- We will use this in downstream qiime activities
+
+module purge
+
+ml biom-format/2.1.14-foss-2022a
+
+module list
+
+# Convert ASV table from .tsv format to .biom format
+
+inputfilename="ASVtable${directoryinput}.tsv"
+outputfilename="ASVtable${directoryinput}.biom"
+
+biom convert -i ./dada2output/${directoryinput}/$inputfilename -o ./dada2output/${directoryinput}/$outputfilename --to-hdf5 --table-type="OTU table"
+
+--------------------------- mergeasvtabs.sh end --------------------------------
+
+################################################################################
+################################################################################
+############################## OPEN REFERENCE ##################################
+############################## OTU GENERATION ##################################
+################################################################################
+################################################################################
+
+# While I like using the dada2 algorithm for initial denoising of the data, for most purposes I prefer to work with OTUs rather than asvs, heres my personal rationale:
+#    1. I am *primarily* interested in the taxonomic identity rather than phylogenetic relatedness (though OTUs could theoretically be used for this but have less granularity) of my communities for my research questions
+#         - Open-reference OTU calling provides an innate taxon hypothesis for most sequences which circumnavigates the inability of taxonomic algorithms to always do so (you'll notice even with close reference OTUs they don't often get it down to the same level)
+#         - For differential abundance analyses I aggregate at a higher taxonomic level than ASV / OTU so the choice is kinda moot
+#         - Using OTUs decreases the processing time for downstream analyses
+#         - Using OTUs makes manual curation and taxonomy assignment more feasible when needed
+#    2. ASVs are known to artificially split single-strain genomes (in bacteria) where multiple copies of a gene are present, meaning that they're artificially increasing the number of taxonomic units if analysis is carried out at this level
+#         - See https://doi.org/10.1128/msphere.00191-21
+#    3. MOST IMPORTANTLY both approaches have a myriad of pros and cons- you should choose based on your RESEARCH QUESTION AND AIMS not on blind faith in either approach!!
+#         - As long as you explain what you did, why you did it, and make your data and code reproducible so others can analyze it their own way if they REALLY want (who has the time??) to then WHO CARES
+#         - (But also don't let me catch u talking about alpha diversity OR trying to show me rarefaction curves OR dain to rarefy your data if you didn't run your dada2 algorithm with 'pooled=TRUE' under either scenarip knowing full well that seq depth = richness and removing per sample singletons violates the underlying math of rarefaction and alpha diversity estimations such as chao1)
+#         - *Soapbox has been put away, for now*
+# Some resources:
+#       - https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0264443
+#       - https://www.sciencedirect.com/science/article/pii/S2001037021005456
+#       - https://journals.asm.org/doi/full/10.1128/msphere.00191-21
+#       - https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0227434
+#       - https://www.nature.com/articles/ismej2017119
+
+# This is where different amplicon pipelines begin to divert down winding paths so pay attention!!!
+
+#********************** NON SILVA/UNITE DB ONLY *******************************#
+#******************************* START ****************************************#
+
+# If you are planning on using the SILVA or UNITE databases in your pipeline, there are QIIME2 compatible versions of them already available which can be used
+# With most other databases, for open reference OTU calling you will need to convert the downloaded .fasta file for database to a qiime2 readable format (.qz)
+
+# Dataset specific parameters
+# $directoryinput : This is where you will place your qiime2 imported database, it should be the same as what you will be using as your intermediate file sub-directory for the otu calling script
+# $dbinput : The file path of your downloaded .fasta file database relative to the base directory (./)
+
+# Submit the batch script
+# AMF LSU (Delavaux database)
+sbatch --export=directoryinput=amflsu,dbinput=./delavaux_lsu/V16_LSUDB_2024.fasta  ./scripts/customdbimport.sh
+# AMF LSU (Self-curated MAARJAM LSU database)
+sbatch --export=directoryinput=amflsu,dbinput=./delavaux_lsu/maarjam_LRORFLR2_speciesonly.fasta  ./scripts/customdbimport.sh
+# AMF 18S (MAARJAM database)
+sbatch --export=directoryinput=amf18s,dbinput=./maarjam_18S/DATABASE.fasta  ./scripts/customdbimport.sh
+# FUNGI ITS (UNITE database)
+sbatch --export=directoryinput=funits,dbinput=./unite_its/sh_general_release_dynamic_all_04.04.2024.fasta  ./scripts/customdbimport.sh
+
+------------------------ customdbimport.sh start -------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=customdbimport
+#SBATCH --ntasks=1
+#SBATCH --time=10:00
+#SBATCH --mem=30G
+#SBATCH --output=./slurmoutputs/lsudbimport.out
+#SBATCH --error=./slurmoutputs/lsudbimport.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=24
+
+#PBJ: Sep 2023 versions of software on GACRC
+module purge
+module load QIIME2/2024.2-amplicon
+
+# Script to import the delavaux curated LSU databse of LROR-FLR2 sequences into a qiime object that can be used for OTU generation
+# Assumes we are in the working directory (./)
+# This script will make the necessary sub-directories to hold the outputs:
+# ./q2files/
+# ./q2files/amflsu # We make this directory because this is SPECIFIC to LSU analysis
+# Assumes that the LSU database fasta file is held in a folder with the following structure:
+# ./delavaux_lsu/Root_V15_LSUDB_3.23.21.fasta
+
+# Make required subdirectories
+mkdir -p ./q2files
+mkdir -p ./q2files/${directoryinput}
+
+# Import AMF reference database
+qiime tools import --input-path ${dbinput} --type 'FeatureData[Sequence]' --output-path ./q2files/${directoryinput}/referenceSeqs.qza
+
+------------------------ customdbimport.sh end ---------------------------------
+
+#********************** NON SILVA/UNITE DB ONLY *******************************#
+#******************************* END ******************************************#
+
+# We carry out open reference OTU clustering using Qiime2
+# Quick explanation:
+#    - Sequences are initially clustered via closed-reference clustering around KNOWN REFERENCE DATABASE sequences serving as the center point of the OTU clusters
+#    - Sequences that do NOT successfully cluster into OTUs through this approach are subsequently clustered de-novo, so that OTU generation is not limited only to known taxa present in the database
+
+# Dataset specific inputs:
+# directory input: The file path of where your ASV table and FASTA files are located relative to the ./dada2output/ directory
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#                 - This may the same as the directory label and sometimes not so it is a separate option to increase flexibility
+# $outdir : Where intermediate qiime2 files will go
+# $refdb : the file path of where your reference database is located relative to the ./q2files/ directory
+# $otulevel : The percentage similarity level that you want OTUs aggregated at- This is useful if you want to see how different thresholds affect OTU delineation particularly if you have a known dataset!
+# $otutotalfreqcutoff : The number of total reads ACROSS ALL SAMPLES that an OTU must have to be maintained in the dataset
+#         - You will want to change this based on your total sequencing depth... e.g., in a seq depth of 100M if an OTU shows up a total of 100 times thats a 1x10^-6 dataset abundance
+# $otusamplefreqcutoff : The numer of SAMPLES that an OTU must be present in to be maintained in the dataset
+#         - I like to set this at somewhere around 10% of the dataset to try and minimize spurious taxa
+# $minsamplefreqcutoff : The number of total sequences that must be present WITHIN A SAMPLE for that sample to be maintained in the dataset
+#         - I like having this option but I tend to set it really low so I can see what's going on in those low-sequence depth samples. Do they make sense in the context of the dataset or are they likely 'empty' samples that might have been filled with barcode hopping seqs?
+
+# Submit the OTU generation script
+sbatch --export=directoryinput=amflsu,dataset=amflsu,outdir=amflsu,refdb=referenceSeqs.qza,otulevel=0.97,otutotalfreqcutoff=10,otusamplefreqcutoff=2,minsamplefreqcutoff=200 ./scripts/openrefotu.sh
+
+
+
+# ITS Short (fITS7-ITS4)
+sbatch --export=directoryinput=funits,dataset=funits,outdir=funits,refdb=referenceSeqs.qza,otulevel=0.97,otutotalfreqcutoff=100,otusamplefreqcutoff=3,minsamplefreqcutoff=200 ./scripts/openrefotu.sh
+
+
+------------------------- openrefotu.sh start ----------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=openrefotu
+#SBATCH --ntasks=1
+#SBATCH --time=4:00:00
+#SBATCH --mem=400G
+#SBATCH --output=./slurmoutputs/openrefotu.out
+#SBATCH --error=./slurmoutputs/openrefotu.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=128
+
+#PBJ: Sep 2023 versions of software on GACRC
+module purge
+module load QIIME2/2024.2-amplicon
+
+# Script to carry out open reference otu picking
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./q2files/
+# ./q2files/${outdir}
+# ./q2files/${outdir}/outputfiles/
+# Assumes that input biom and fasta files are in the following location:
+# ./dada2output/${directoryinput}/
+
+echo; echo "Making required directories..."
+
+# Make the required directory to put qiime2 outputs and intermediate files
+
+mkdir -p ./q2files/ # Directory that holds ALL q2 files
+mkdir -p ./q2files/${outdir} # Sub-directory to hold intermediate files relevatnt ot each dataset
+mkdir -p ./q2files/${outdir}/outputfiles/ # Sub-directory to hold FINAL OUTPUTS that will be used downstream relevant to each dataset
+mkdir -p ./finaloutputs/ # Directory to hold the final files (dataset depending) that you will use for all of your fun ecological analyses.
+mkdir -p ./finaloutputs/${outdir} # Sub-directory to hold final files relevant to each dataset
+
+#************************* IMPORT QIIME2 FILES ********************************#
+
+echo; echo "Importing QIIME2 files..."
+
+# Import ASV biom file to a qiime2 readable format
+
+qiime tools import --input-path ./dada2output/${directoryinput}/ASVtable${dataset}.biom \
+ --type 'FeatureTable[Frequency]' \
+ --input-format BIOMV210Format \
+ --output-path ./q2files/${outdir}/ASVtable${dataset}.biom.qza
+
+# Import ASV fasta file
+
+qiime tools import --input-path ./dada2output/${directoryinput}/ASVs${dataset}.fasta \
+ --type 'FeatureData[Sequence]' \
+ --output-path ./q2files/${outdir}/ASVs${dataset}.fasta.qza
+
+echo; echo "QIIME2 files have been imported"
+
+#************* AGGREGATE NON-CHIMERIC ASVs to 97% OTUS ************************#
+
+echo; echo "Starting OTU clustering..."
+
+# Cluster ASVs to OTUs using vsearch
+
+qiime vsearch cluster-features-open-reference --i-table ./q2files/${outdir}/ASVtable${dataset}.biom.qza \
+  --i-sequences ./q2files/${outdir}/ASVs${dataset}.fasta.qza \
+  --i-reference-sequences ./q2files/${outdir}/${refdb} \
+  --p-perc-identity ${otulevel} \
+  --o-clustered-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}.qza \
+  --o-clustered-sequences ./q2files/${outdir}/oturepseqs_${otulevel}_${dataset}.qza \
+  --o-new-reference-sequences ./q2files/${outdir}/otunewrefseqs_${otulevel}_${dataset}.qza \
+  --verbose
+
+echo; echo "ASVs have been clustered into OTUs at ${otulevel} sequence similarity"
+
+#************************* UCHIME CHIMERA REMOVAL *****************************#
+
+# Additional chimera removal
+
+echo;echo "Beginning additional chimera removal step..."
+
+#Carry out chimera removal based on uchime algorithm
+
+qiime vsearch uchime-denovo --i-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}.qza \
+ --i-sequences ./q2files/${outdir}/oturepseqs_${otulevel}_${dataset}.qza \
+ --output-dir ./q2files/${outdir}/uchime-dn-out${otulevel} \
+ --verbose
+
+# Filter the feature table to remove any sequences that were chimeric
+
+qiime feature-table filter-features --i-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}.qza \
+ --m-metadata-file ./q2files/${outdir}/uchime-dn-out${otulevel}/nonchimeras.qza \
+ --o-filtered-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_nochim.qza \
+ --verbose
+
+echo; echo "Additional uchime chimera removal step complete"
+
+#********************* OTU TABLE CLEANUP *************************#
+
+echo; echo "Beginning otu table and sequence filtering..."
+
+# Remove OTUs that occur fewer than X times
+
+qiime feature-table filter-features --i-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_nochim.qza \
+ --p-min-frequency ${otutotalfreqcutoff} \
+ --p-min-samples ${otusamplefreqcutoff} \
+ --o-filtered-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_rarityfiltered.qza \
+ --verbose
+
+# Remove samples with fewer than 1000 reads
+
+qiime feature-table filter-samples --i-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_rarityfiltered.qza \
+ --p-min-frequency ${minsamplefreqcutoff} \
+ --o-filtered-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_depthfiltered.qza \
+ --verbose
+
+# Update OTU representative sequences to exclude OTUs that were removed:
+
+qiime feature-table filter-seqs --i-data ./q2files/${outdir}/oturepseqs_${otulevel}_${dataset}.qza \
+ --i-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_depthfiltered.qza \
+ --o-filtered-data ./q2files/${outdir}/oturepseqs_${otulevel}_${dataset}_depthfiltered.qza \
+ --verbose
+
+echo; echo "Rare OTUs and low-coverage samples have been removed from the dataset."
+
+#************************* EXPORT FINAL FILES ***************************
+
+echo; echo "Beginning final file export..."
+
+# Export OTU representative sequences into .fasta format:
+# Qiime2 forces output into a file called dna-sequences.fasta . We direct it into ./q2files/ and rename it
+
+qiime tools export --input-path ./q2files/${outdir}/oturepseqs_${otulevel}_${dataset}_depthfiltered.qza --output-path ./q2files/${outdir}/outputfiles
+
+# Add OTU to the start of all sequence headers, remove any reference to ASVs, they are no longer ASVs
+
+cat ./q2files/${outdir}/outputfiles/dna-sequences.fasta | sed 's/>/>OTU/g'|sed 's/ASV//g' > ./q2files/${outdir}/outputfiles/oturepseqs_${otulevel}_${dataset}.fasta # rename file, relabel ASVs as OTUs, and any perfect matched to database append OTU and move to working directory.
+
+# Copy this fasta file output over to your finaloutputs directory
+cp ./q2files/${outdir}/outputfiles/oturepseqs_${otulevel}_${dataset}.fasta ./finaloutputs/${outdir}/
+
+# Export OTU table into .tsv format:
+# Qiime2 forces output into a .biom file called feature-table.biom . We direct it into ./q2files/
+
+qiime tools export \
+ --input-path ./q2files/${outdir}/otutable_${otulevel}_${dataset}_depthfiltered.qza \
+ --output-path ./q2files/${outdir}/outputfiles/
+
+# Convert from .biom to .tsv:
+
+module purge
+ml biom-format/2.1.14-foss-2022a
+module list
+
+biom convert -i ./q2files/${outdir}/outputfiles/feature-table.biom \
+ -o ./q2files/${outdir}/outputfiles/feature-table.tsv \
+ --to-tsv
+
+cat ./q2files/${outdir}/outputfiles/feature-table.tsv | sed 's/ASV//g' | awk '{print "OTU"$0}' | sed 's/OTU#OTU ID/X.OTU.ID/g' > ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv # rename file, relabel ASVs as OTUs, any perfect matched to database append OTU and move to working directory
+
+# Remove first line and convert to csv
+
+cp ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}2.tsv # Backup
+
+tail -n +2 ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv | tr '\t' ',' > ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.csv
+
+# Remove first line and keep as tsv as well...
+
+tail -n +2 ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}2.tsv > ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv
+
+# Copy this fasta otu file output over to your finaloutputs directory
+# For most purposes this will be the last file you require prior to any further taxonomic filtering you might do in R or something similar
+cp ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv ./finaloutputs/${outdir}/
+
+
+echo;echo "export of sequences and OTU table complete"
+
+# Clean up the directory to remove confusion later...
+mv ./q2files/${outdir}/otunewrefseqs* ./q2files/${outdir}/outputfiles/
+rm ./q2files/${outdir}/*.qza
+rm -r ./q2files/${outdir}/uchime-dn-out${otulevel}
+rm ./q2files/${outdir}/outputfiles/dna-sequences.fasta
+rm ./q2files/${outdir}/outputfiles/feature-table*
+
+----------------------------- openrefotu.sh end --------------------------------
+
+#*************************** ASV LOVERS ONLY **********************************#
+#******************************** START ***************************************#
+
+# Now you might find yourself saying, "But Phil, I want to work with ASVs and I don't want to figure out how to adapt this lovingly prepared OTU pipeline to do it and also stop bullying me :("
+# This section is for you!
+# The following script will give you an equivalent set of output files to open reference otu calling which can be slotted into the next steps of the pipeline, but for ASVS! *cheers*
+# You could even use this to get an overview of how OTU vs ASV methods compare and use that to shut up reviewers who dispute either approach
+
+# Dataset specific inputs:
+# directory input: The file path of where your ASV table and FASTA files are located relative to the ./dada2output/ directory
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#                 - This may the same as the directory label and sometimes not so it is a separate option to increase flexibility
+# $outdir : Where intermediate qiime2 files will go
+# $otulevel : for this you can put 'asv' instead of the otu level, it is purely for naming conventions and won't be actively used in any steps of the script
+# $otutotalfreqcutoff : The number of total reads ACROSS ALL SAMPLES that an OTU must have to be maintained in the dataset
+#         - You will want to change this based on your total sequencing depth... e.g., in a seq depth of 100M if an OTU shows up a total of 100 times thats a 1x10^-6 dataset abundance
+# $otusamplefreqcutoff : The numer of SAMPLES that an OTU must be present in to be maintained in the dataset
+#         - I like to set this at somewhere around 10% of the dataset to try and minimize spurious taxa
+# $minsamplefreqcutoff : The number of total sequences that must be present WITHIN A SAMPLE for that sample to be maintained in the dataset
+#         - I like having this option but I tend to set it really low so I can see what's going on in those low-sequence depth samples. Do they make sense in the context of the dataset or are they likely 'empty' samples that might have been filled with barcode hopping seqs?
+
+# Submit the ASV filtering script
+# Don't run this AT THE SAME TIME as the openrefotu.sh script steps might try and overwrite each other
+sbatch --export=directoryinput=amflsu,dataset=amflsu,outdir=amflsu,otulevel=asv,otutotalfreqcutoff=10,otusamplefreqcutoff=2,minsamplefreqcutoff=200 ./scripts/asvfilter.sh
+
+sbatch --export=directoryinput=funits,dataset=funits,outdir=funits,otulevel=asv,otutotalfreqcutoff=10,otusamplefreqcutoff=2,minsamplefreqcutoff=200 ./scripts/asvfilter.sh
+
+
+sbatch --export=directoryinput=amflsu,dataset=amflsu,outdir=amflsu,otulevel=asv,otutotalfreqcutoff=100,otusamplefreqcutoff=3,minsamplefreqcutoff=200 ./scripts/asvfilter.sh
+
+------------------------- asvfilter.sh start -----------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=asvfilter
+#SBATCH --ntasks=1
+#SBATCH --time=4:00:00
+#SBATCH --mem=400G
+#SBATCH --output=./slurmoutputs/asvfilter.out
+#SBATCH --error=./slurmoutputs/asvfilter.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=128
+
+#PBJ: Sep 2023 versions of software on GACRC
+
+module purge
+module load QIIME2/2024.2-amplicon
+
+# Script to carry out additional chimera removal
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./q2files/
+# ./q2files/${outdir}
+# ./q2files/${outdir}/outputfiles/
+# Assumes that input biom and fasta files are in the following location:
+# ./dada2output/${directoryinput}/
+
+echo; echo "Making required directories..."
+
+# Make the required directory to put qiime2 outputs and intermediate files
+
+mkdir -p ./q2files/ # Directory that holds ALL q2 files
+mkdir -p ./q2files/${outdir} # Sub-directory to hold intermediate files relevatnt ot each dataset
+mkdir -p ./q2files/${outdir}/outputfiles/ # Sub-directory to hold FINAL OUTPUTS that will be used downstream relevant to each dataset
+mkdir -p ./finaloutputs/ # Directory to hold the final files (dataset depending) that you will use for all of your fun ecological analyses.
+mkdir -p ./finaloutputs/${outdir} # Sub-directory to hold final files relevant to each dataset
+
+
+#************************* IMPORT QIIME2 FILES ********************************#
+
+echo; echo "Importing QIIME2 files..."
+
+# Import ASV biom file to a qiime2 readable format
+
+qiime tools import --input-path ./dada2output/${directoryinput}/ASVtable${dataset}.biom \
+ --type 'FeatureTable[Frequency]' \
+ --input-format BIOMV210Format \
+ --output-path ./q2files/${outdir}/ASVtable${dataset}.biom.qza
+
+# Import ASV fasta file
+
+qiime tools import --input-path ./dada2output/${directoryinput}/ASVs${dataset}.fasta \
+ --type 'FeatureData[Sequence]' \
+ --output-path ./q2files/${outdir}/ASVs${dataset}.fasta.qza
+
+echo; echo "QIIME2 files have been imported"
+
+#************************* UCHIME CHIMERA REMOVAL *****************************#
+
+# Additional chimera removal
+
+echo;echo "Beginning additional chimera removal step..."
+
+#Carry out chimera removal based on uchime algorithm
+
+qiime vsearch uchime-denovo --i-table ./q2files/${outdir}/ASVtable${dataset}.biom.qza \
+ --i-sequences ./q2files/${outdir}/ASVs${dataset}.fasta.qza \
+ --output-dir ./q2files/${outdir}/uchime-dn-out${otulevel} \
+ --verbose
+
+# Filter the feature table to remove any sequences that were chimeric
+
+qiime feature-table filter-features --i-table ./q2files/${outdir}/ASVtable${dataset}.biom.qza \
+ --m-metadata-file ./q2files/${outdir}/uchime-dn-out${otulevel}/nonchimeras.qza \
+ --o-filtered-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_nochim.qza \
+ --verbose
+
+echo; echo "Additional uchime chimera removal step complete"
+
+#********************* OTU TABLE CLEANUP *************************#
+
+echo; echo "Beginning otu table and sequence filtering..."
+
+# Remove OTUs that occur fewer than X times
+
+qiime feature-table filter-features --i-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_nochim.qza \
+ --p-min-frequency ${otutotalfreqcutoff} \
+ --p-min-samples ${otusamplefreqcutoff} \
+ --o-filtered-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_rarityfiltered.qza \
+ --verbose
+
+# Remove samples with fewer than 1000 reads
+
+qiime feature-table filter-samples --i-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_rarityfiltered.qza \
+ --p-min-frequency ${minsamplefreqcutoff} \
+ --o-filtered-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_depthfiltered.qza \
+ --verbose
+
+# Update OTU representative sequences to exclude OTUs that were removed:
+
+qiime feature-table filter-seqs --i-data ./q2files/${outdir}/ASVs${dataset}.fasta.qza \
+ --i-table ./q2files/${outdir}/otutable_${otulevel}_${dataset}_depthfiltered.qza \
+ --o-filtered-data ./q2files/${outdir}/oturepseqs_${otulevel}_${dataset}_depthfiltered.qza \
+ --verbose
+
+echo; echo "Rare OTUs and low-coverage samples have been removed from the dataset."
+
+#************************* EXPORT FINAL FILES ***************************
+
+echo; echo "Beginning final file export..."
+
+# Export OTU representative sequences into .fasta format:
+# Qiime2 forces output into a file called dna-sequences.fasta . We direct it into ./q2files/ and rename it
+
+qiime tools export --input-path ./q2files/${outdir}/oturepseqs_${otulevel}_${dataset}_depthfiltered.qza --output-path ./q2files/${outdir}/outputfiles
+
+# Rename dna-sequences.fasta and export it
+
+cat ./q2files/${outdir}/outputfiles/dna-sequences.fasta > ./q2files/${outdir}/outputfiles/oturepseqs_${otulevel}_${dataset}.fasta # rename file, relabel ASVs as OTUs, and any perfect matched to database append OTU and move to working directory.
+
+# Copy this fasta file output over to your finaloutputs directory
+cp ./q2files/${outdir}/outputfiles/oturepseqs_${otulevel}_${dataset}.fasta ./finaloutputs/${outdir}/
+
+# Export OTU table into .tsv format:
+# Qiime2 forces output into a .biom file called feature-table.biom . We direct it into ./q2files/
+
+qiime tools export \
+ --input-path ./q2files/${outdir}/otutable_${otulevel}_${dataset}_depthfiltered.qza \
+ --output-path ./q2files/${outdir}/outputfiles/
+
+# Convert from .biom to .tsv:
+
+module purge
+ml biom-format/2.1.14-foss-2022a
+module list
+
+biom convert -i ./q2files/${outdir}/outputfiles/feature-table.biom \
+ -o ./q2files/${outdir}/outputfiles/feature-table.tsv \
+ --to-tsv
+
+cat ./q2files/${outdir}/outputfiles/feature-table.tsv > ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv # rename file, relabel ASVs as OTUs, any perfect matched to database append OTU and move to working directory
+
+# Remove first line and convert to csv
+
+cp ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}2.tsv # Backup
+
+tail -n +2 ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv | tr '\t' ',' > ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.csv
+
+# Remove first line and keep as tsv as well...
+
+tail -n +2 ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}2.tsv > ./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.tsv
+
+echo;echo "Export of sequences and ASV table complete"
+
+# Clean up the directory to remove confusion later...
+rm ./q2files/${outdir}/*.qza
+rm -r ./q2files/${outdir}/uchime-dn-out${otulevel}
+
+-------------------------- asvfilter.sh end ------------------------------------
+
+#*************************** ASV LOVERS ONLY **********************************#
+#******************************** END *****************************************#
+
+# We will now clean up our sample names before moving onto any further downstream steps
+# For illumina sequencing projects, everything after the first "_" refers to sequencer related stuff (sequencer sample position, lane etc.) and we don't want that any more.
+
+# Dataset specific inputs:
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#         - In this case we merge the $dataset and $run information into one parameter, if you have only one run you do not need to do this just use your usual dataset name
+# $outdir : Where qiime2 files specific to your dataset were put in the last step
+# $otulevel : The percentage similarity level that you want OTUs aggregated at- This is useful if you want to see how different thresholds affect OTU delineation particularly if you have a known dataset!
+#         - We maintain this because it's part of the file name now, which will be different depending on what otu level you chose
+#         - If you are working with ASVs instead of OTUs then use 'asv' instead of a number
+# $filetype : The input and export file type that will be cleaned up. This is so you can easily alter both tsv and csv outputs from the previous step per your purposes
+
+# Submit batch scripts to clean up headers
+sbatch --export=dataset=amflsu,outdir=amflsu,otulevel=0.97,filetype=csv scripts/headercleanup.sh
+sbatch --export=dataset=amflsu,outdir=amflsu,otulevel=0.97,filetype=tsv scripts/headercleanup.sh
+sbatch --export=dataset=amflsu,outdir=amflsu,otulevel=asv,filetype=csv scripts/headercleanup.sh
+sbatch --export=dataset=amflsu,outdir=amflsu,otulevel=asv,filetype=tsv scripts/headercleanup.sh
+
+# Submit batch scripts to clean up headers
+sbatch --export=dataset=funits,outdir=funits,otulevel=0.97,filetype=csv scripts/headercleanup.sh
+sbatch --export=dataset=funits,outdir=funits,otulevel=0.97,filetype=tsv scripts/headercleanup.sh
+sbatch --export=dataset=funits,outdir=funits,otulevel=asv,filetype=csv scripts/headercleanup.sh
+sbatch --export=dataset=funits,outdir=funits,otulevel=asv,filetype=tsv scripts/headercleanup.sh
+
+------------------------ headercleanup.sh start --------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=headercleanup
+#SBATCH --ntasks=1
+#SBATCH --time=10:00
+#SBATCH --mem=2G
+#SBATCH --output=./slurmoutputs/headercleanup.out
+#SBATCH --error=./slurmoutputs/headercleanup.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=4
+
+# define files
+input_file="./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.${filetype}"
+input_file2="./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}2.${filetype}"
+cp ${input_file} "${input_file2}" # temporary file
+output_file="./q2files/${outdir}/outputfiles/otutable_${otulevel}_${dataset}.${filetype}" # We'll just overwrite the last file to avoid multiple file names and even further confusion in an already involved set of file names...
+
+# Define the sed patten depending on input file type
+if [ "${filetype}" = "csv" ]; then
+  sed_pattern='s/\([^_]*\)_[^,]*/\1/g'
+elif [ "${filetype}" = "tsv" ]; then
+  sed_pattern='s/\([^_]*\)_[^\t]*/\1/g'
+else
+    echo "Unsupported file type"
+fi
+
+# remove everything after the "_" in the filename
+header=$(head -n 1 "${input_file2}" | sed ${sed_pattern})
+
+# Print the modified header to the output file
+echo "$header" > "$output_file"
+
+# Print the rest of the file to the output file
+tail -n +2 "$input_file2" >> "$output_file"
+
+# remove the temporary input file
+rm ${input_file2}
+
+# Copy the output file output over to your finaloutputs directory
+cp ${output_file} ./finaloutputs/${outdir}/
+
+-------------------------- headercleanup.sh end --------------------------------
+
+################################################################################
+################################################################################
+############################# PHYLOGENETICS AND ################################
+############################# SEQUENCE CURATION ################################
+################################################################################
+################################################################################
+
+# We now have (for most amplicons) our final (for this purpose) OTU/ASV table and a matching fasta file which will be used downstream in our taxonomy assignments
+
+# For AMF we will perform an additional set of BLAST filtering before moving on to the next steps
+
+#************************* BLAST CURATION ONLY **********************************#
+#**************************** PART 1 START ************************************#
+
+# For some datasets we may want to perform a round of OTU / ASV filtering based on whether they successfully BLAST against a reference database of known taxa.
+# There is a compromise / tension in this appraoch between capturing novel / previously unrepresented taxa in your dataset, and ensuring that you are not spuriously capturing false positive taxa that may be PCR / sequence errors or non-target amplification.
+
+sbatch --export=targetdatabaseinput=./delavaux_lsu/V16_LSUDB_2024_AMFONLY.fasta,targetdatabaseblast=./amfcuration/blastdb/V16_LSUDB_2024_AMFONLY,outdir=amflsu,database=amflsu,otulevel=0.97,dataset=amflsu,blastcuration=AMFblast scripts/extractblast.sh
+sbatch --export=targetdatabaseinput=./delavaux_lsu/V16_LSUDB_2024_AMFONLY.fasta,targetdatabaseblast=./amfcuration/blastdb/V16_LSUDB_2024_AMFONLY,outdir=amflsu,database=amflsu,otulevel=asv,dataset=amflsu,blastcuration=AMFblast scripts/extractblast.sh
+
+--------------------------- blastextract.sh start ----------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=amfblast
+#SBATCH --ntasks=1
+#SBATCH --time=4:00:00
+#SBATCH --mem=250G
+#SBATCH --output=./slurmoutputs/extractblast.out
+#SBATCH --error=./slurmoutputs/extractblast.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=128
+
+# Script to carry out additional dataset curation through BLAST-based filtering of taxa that only fall within a known clade
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./targetcuration
+# ./targetcuration/${outdir}
+# Assumes that input otu table and fasta files are in the following location:
+# ./finaloutputs/${dataset}/
+#      otu file = "otutable_${otulevel}_${dataset}.tsv" # You MUST have the tsv output
+#      fasta file = "oturepseqs_${otulevel}_${dataset}.fasta"
+
+module purge
+module load R/4.3.2-foss-2022b
+module load BLAST+/2.14.0-gompi-2022b
+
+# Make the necessary subdirectories
+mkdir -p ./targetcuration/
+mkdir -p ./targetcuration/${outdir}/
+mkdir -p ./targetcuration/blastdb/
+
+echo; echo "Making BLAST database..."
+
+#Make BLAST reference database
+
+makeblastdb -in ${targetdatabaseinput} -input_type fasta -dbtype nucl -out ${targetdatabaseblast}
+
+echo; echo "Beginning BLAST search against chosen reference database..."
+
+#Blast reads, extract top hit based on bit score, extract col 1 (list of OTUs), replace header with feature-id
+
+blastn -db ${targetdatabaseblast} -query ./finaloutputs/${outdir}/oturepseqs_${otulevel}_${dataset}.fasta -outfmt 6 | sort -k1,1 -k12,12nr -k11,11n | sort -u -k1,1 --merge > ./targetcuration/${outdir}/oturepseqs_${otulevel}_${dataset}_BLASTHITS_A.txt
+
+# PBJ: I added awk '$3>95 {print}' as a mid-step before outputting the list of OTUs with blast hits against the database to remove any OTUs which did not have over 95% QUERY COVER against the database because I was finding that there were multiple OTUs which when I checked them manually in either NCBI blast or MAARJAM blast that had very poor alignments (<80%) but very good percent identity for the portions that did align and so were essentially spuriously assigned to target. These do not seem to get picked up and removed by the extractclade.R script ran later.
+
+awk '$3>95 {print}' ./targetcuration/${outdir}/oturepseqs_${otulevel}_${dataset}_BLASTHITS_A.txt | cut -f1 > ./targetcuration/${outdir}/oturepseqs_${otulevel}_${dataset}_BLASTHITS.txt
+
+# Get unique ASV/OTU and add header
+cat ./targetcuration/${outdir}/oturepseqs_${otulevel}_${dataset}_BLASTHITS.txt |sort| uniq | sed -e '1i\taxunits' > ./targetcuration/${outdir}/oturepseqs_${otulevel}_${dataset}_BLASTHITS_cut.tsv
+
+echo; echo "BLAST has been completed; each OTU with a hit saved. Now filtering data based on BLAST hits..."
+
+# Replace dummy variables in the R script
+cat ./scripts/extractblast.R | sed "s/dataset.value.input/${dataset}/" | sed "s/outdir.value.input/${outdir}/" | sed "s/otulevel.value.input/${otulevel}/" | sed "s/blastcuration.value.input/${blastcuration}/"  > ./scripts/extractblast${dataset}.R
+
+# Subset .fasta and .txt based on this name list:
+Rscript ./scripts/extractblast${dataset}.R
+
+# remove once no longer needed:
+rm ./scripts/extractblast${dataset}.R
+rm ./targetcuration/${outdir}/oturepseqs_${otulevel}_${dataset}_BLASTHITS_A.txt
+rm ./targetcuration/${outdir}/oturepseqs_${otulevel}_${dataset}_BLASTHITS.txt
+rm ./targetcuration/${outdir}/oturepseqs_${otulevel}_${dataset}_BLASTHITS_cut.tsv
+rm -r ./targetcuration/blastdb/
+
+# Copy filtered output files to the finaloutputs directory
+# You can compare your base output otu table with both of these
+cp ./targetcuration/${outdir}/* ./finaloutputs/${outdir}/
+
+# Now we can remove the 'targetcuration' folder, we no longer need it and will remake it when/if necessary during phylogenetic curation
+rm -r ./targetcuration
+
+echo;echo "Sequences and OTU table subset to BLAST positive OTUs"
+
+-------------------------- blastextract.sh end -------------------------------------
+
+#************************* AMF CURATION ONLY **********************************#
+#**************************** PART 1 END **************************************#
+
+# For some datasets we will align using a reference dataset for input to downstream steps:
+#      - AMF LSU : Delavaux LSU database, we use the tree resulting from this alignment for taxonomy curation
+# I've included this in a more generic form rather than specific to the LSU pipeline really just in case it's useful to others
+#      - If you want to make a phylogeny for your sequences alone you could simply add an outgroup taxa fasta file in place of a reference database for which you can use to root the phylogeny with when calculating phylogenetic diveristy indices our visualizing the tree
+
+# Dataset specific inputs:
+# directory input: The file path of where your ASV table and FASTA files are located relative to the ./dada2output/ directory
+# $dataset : Your dataset name- I use my target organism and primer region e.g., 'amflsu', 'bac16s', 'funits'.
+#                 - This may the same as the directory label and sometimes not so it is a separate option to increase flexibility
+# $outdir : Where intermediate qiime2 files will go
+# $otulevel : for this you can put 'asv' instead of the otu level, it is purely for naming conventions and won't be actively used in any steps of the script
+# $otutotalfreqcutoff : The number of total reads ACROSS ALL SAMPLES that an OTU must have to be maintained in the dataset
+#         - You will want to change this based on your total sequencing depth... e.g., in a seq depth of 100M if an OTU shows up a total of 100 times thats a 1x10^-6 dataset abundance
+# $otusamplefreqcutoff : The numer of SAMPLES that an OTU must be present in to be maintained in the dataset
+#         - I like to set this at somewhere around 10% of the dataset to try and minimize spurious taxa
+# $minsamplefreqcutoff : The number of total sequences that must be present WITHIN A SAMPLE for that sample to be maintained in the dataset
+#         - I like having this option but I tend to set it really low so I can see what's going on in those low-sequence depth samples. Do they make sense in the context of the dataset or are they likely 'empty' samples that might have been filled with barcode hopping seqs?
+# blastcuration : Whether an input file comes from the amfblast.sh outputs or not
+#         - If you DID NOT BLAST filter your reads against a reference database then LEAVE THIS BLANK but do not remove the parameter
+#         - If you DID BLAST filter your reads, put 'AMF' to match the new file name end of curated files
+#         - Maybe you subbed in your own curation database... Change this to whatever you put at the end of those!
+
+# Run the batch script
+sbatch --export=dataset=amflsu,otulevel=0.97,outdir=amflsu,refdbid=delavauxlsu,refdb=./delavaux_lsu/V16_LSUDB_2024.fasta,blastcuration=AMFblast scripts/alignseqs.sh
+sbatch --export=dataset=amflsu,otulevel=asv,outdir=amflsu,refdbid=delavauxlsu,refdb=./delavaux_lsu/V16_LSUDB_2024.fasta,blastcuration=AMFblast scripts/alignseqs.sh
+
+
+-------------------------- alignseqs.sh start ----------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=alignseqsdb
+#SBATCH --ntasks=1
+#SBATCH --time=4:00:00
+#SBATCH --mem=250G
+#SBATCH --output=./slurmoutputs/alignseqs.out
+#SBATCH --error=./slurmoutputs/alignseqs.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=128
+
+# Script to carry out sequence alignment of your experimental sequences against EACH OTHER AND A REFERENCE DATABASE OR OUTGROUP SEQUENCE
+# Assumes we are in the working directory (./)
+# Expects the following sub-directories created in previous steps:
+# ./finaloutput/
+# ./finaloutput/${outdir}
+# Assumes that the input fasta for experimental sequences is in the following location from the previous steps:
+# ./finaloutput/${outdir}/
+
+# Load needed programs
+module purge
+module load QIIME2/2024.2-amplicon
+
+echo;echo "Defining input files..."
+
+#Define your experimental sequence input fasta
+inputfasta="./finaloutputs/${outdir}/oturepseqs_${otulevel}_${dataset}${blastcuration}.fasta"
+
+# join reference database and study seqs together in a single fasta file
+cat ${refdb} ${inputfasta} > ./q2files/${outdir}/${refdbid}_${otulevel}_alignmentinput.fasta
+
+echo;echo "Converting input files to qiime2 format..."
+
+# Convert the joined fasta file into a qiime2 readable format
+qiime tools import --input-path ./q2files/${outdir}/${refdbid}_${otulevel}_alignmentinput.fasta \
+ --output-path ./q2files/${outdir}/${refdbid}_${otulevel}_alignmentinput.fasta.qza \
+ --type 'FeatureData[Sequence]'
+
+ echo;echo "Beginning alignment using mafft..."
+
+# Align all sequences in the fasta file using mafft
+qiime alignment mafft --i-sequences ./q2files/${outdir}/${refdbid}_${otulevel}_alignmentinput.fasta.qza \
+ --o-alignment ./q2files/${outdir}/${refdbid}_${otulevel}_alignmentoutput.fasta.qza
+
+ echo;echo "Exporting aligned sequences..."
+
+# Export aligned sequences to a new fasta file
+qiime tools export --input-path ./q2files/${outdir}/${refdbid}_${otulevel}_alignmentoutput.fasta.qza \
+ --output-path ./q2files/${outdir}/outputfiles/
+
+# qiime2 export will output a file called 'dna-sequences.fasta', we will now rename it to something more trackable
+mv ./q2files/${outdir}/outputfiles/aligned-dna-sequences.fasta ./q2files/${outdir}/outputfiles/${refdbid}_${dataset}_${otulevel}_alignmentoutput.fasta
+
+# Clean up any intermediate files
+rm ./q2files/${outdir}/${refdbid}*
+
+echo;echo "Export of aligned sequences complete"
+
+---------------------------- alignseqs.sh end ----------------------------------
+
+# We now have a set of aligned sequences that can be used to build a phylogenetic tree using RAxML
+# Get ready to really use some COMPUTING POWER. I do not split this up into chunks because I like to look at the whole tree when I am done.
+
+# Submit the batch script to build a phylogenetic tree using RAxML
+# Run these at different times for OTU and ASV- they use the same file name set
+sbatch --export=backbone=./delavaux_lsu/Root_V16_LSUDB-1000BS-GTRGAMMA-bootstrap-tree.newick,outdir=amflsu,refdbid=delavauxlsu,otulevel=0.97,dataset=amflsu,treecuration=AMFtree scripts/buildtree.sh
+sbatch --export=backbone=./delavaux_lsu/Root_V16_LSUDB-1000BS-GTRGAMMA-bootstrap-tree.newick,outdir=amflsu,refdbid=delavauxlsu,otulevel=asv,dataset=amflsu,treecuration=AMFtree scripts/buildtree.sh
+
+--------------------------- buildtree.sh start ---------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=buildtree
+#SBATCH --ntasks=1
+#SBATCH --time=4:00:00
+#SBATCH --mem=250G
+#SBATCH --output=./slurmoutputs/buildtree/buildtree.%a.out
+#SBATCH --error=./slurmoutputs/buildtree/buildtree.%a.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=24
+#SBATCH --array=1-11
+#SBATCH --constraint=EDR
+
+# Script to carry out phylogenetic tree generation using RAxML
+# Assumes we are in the working directory (./)
+# Will make the necessary sub-directories if they are not present:
+# ./phylogeny/
+# ./q2files/${dataset}
+# Assumes that the input fasta for experimental sequences is in the following location from the previous steps:
+# ./q2files/${outdir}/outputfiles/
+
+# Load the needed programs
+module purge
+module load RAxML/8.2.12-foss-2019b-pthreads-avx
+
+echo; echo "Making required directories..."
+
+# Make the required directory to put qiime2 outputs and intermediate files
+
+mkdir -p ./phylogeny/
+mkdir -p ./phylogeny/${outdir}
+mkdir -p ./phylogeny/${outdir}/${otulevel}
+
+echo; echo "Beginning RAxML tree building..."
+
+RAxMLoutpath=`pwd`/phylogeny/${outdir}/ # specify FULL path to hold RAxML output files.
+treebuildinput="./q2files/${outdir}/outputfiles/${refdbid}_${dataset}_${otulevel}_alignmentoutput.fasta"
+
+#Input is output of exported fasta file. The output file is uniquely named for the sub sample number
+
+raxmlHPC-PTHREADS-AVX -f a -m GTRGAMMA -p 42 -x 42 -r ${backbone} -s ${treebuildinput} -n ${SLURM_ARRAY_TASK_ID}_treebuild -T 24 -w $RAxMLoutpath -#100
+
+#Clean Up
+# I dont think this is actually needed in the way i do it
+#mv RAxML_* ./phylogeny/${outdir}/
+
+mv ./phylogeny/${outdir}/RAxML* ./phylogeny/${outdir}/${otulevel}
+
+echo; echo "RAxML tree building complete..."
+
+--------------------------- buildtree.sh end -----------------------------------
+
+# This concludes the phylogeny for the majority of datasets, congratulations you can now use this tree downstream in your own analysis.
+# For AMF (LSU)... this tree is the starting point for our second round of curation!
+
+export=cladestart=AM183920_Geosiphon_pyriformis,cladeend=MT832207_Acaulospora_tuberculata,treeroot=M11585.1_Oryza_sativa,treecuration=treeAMF,outdir=amflsu,otulevel=0.97,treecuration=AMFtree,taxunit=OTU
+ sed "s/outdir.input.value/$outdir/" | sed "s/otulevel.input.value/$otulevel/" | sed "s/treecuration.value.input/${treecuration}/" | sed "s/taxaunit.input.value/$taxunit/" | > ./scripts/cladeextract$dataset.R
+
+
+directory.value <- "directory.input.value"
+outdir.value <- "outdir.input.value"
+otulevel.value <- "otulevel.input.value"
+taxaunit.value <- "taxaunit.input.value
+
+#********************** AMF CURATION (LSU) ONLY *******************************#
+#**************************** PART 2 START ************************************#
+
+sbatch --export=cladestart=AM183920_Geosiphon_pyriformis,cladeend=MT832207_Acaulospora_tuberculata,treeroot=M11585.1_Oryza_sativa,treecuration=treeAMF,outdir=amflsu,dataset=amflsu,otulevel=0.97,taxunit=OTU,blastcuration=AMFblast scripts/extractclade.sh
+
+----------- extractclade.sh start
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=extractclade
+#SBATCH --ntasks=1
+#SBATCH --time=30:00
+#SBATCH --mem=50G
+#SBATCH --output=./slurmoutputs/extractclade.out
+#SBATCH --error=./slurmoutputs/extractclade.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+
+module purge
+module load R/4.3.2-foss-2022b
+
+# Script to carry out additional dataset curation through phylogeny-based filtering of taxa that only fall within a known clade
+# Assumes we are in the working directory (./)
+# This script ONLY follows on from the BLAST curation script, therefore running 'extractblast.sh' is a PRE-REQUISITE.
+# Will make the necessary sub-directories if they are not present:
+# ./targetcuration
+# ./targetcuration/${outdir}
+# Assumes that input phylogeny files are in the following location:
+# ./phylogeny/${outdir}/${otulevel}
+# Assumes that input otu table and fasta files are in the following location:
+# ./finaloutputs/${dataset}/
+#      otu file = "otutable_${otulevel}_${dataset}${blastcuration}.tsv" # You MUST have the tsv output
+#      fasta file = "oturepseqs_${otulevel}_${dataset}${blastcuration}.fasta"
+
+echo;echo "Inputting dummy variables to R script..."
+
+cat ./scripts/cladeextract.R | sed "s/cladestart.input.value/$cladestart/" | sed "s/cladeend.input.value/$cladeend/" | sed "s/treeroot.input.value/$treeroot/" | sed "s/outdir.input.value/$outdir/" | sed "s/dataset.input.value/$dataset/" | sed "s/otulevel.input.value/$otulevel/" | sed "s/treecuration.value.input/${treecuration}/" | sed "s/taxaunit.input.value/$taxunit/" | sed "s/blastcuration.input.value/$blastcuration/" > ./scripts/cladeextract$dataset.R
+
+echo;echo "Running 'extractclade${dataset}.R'..."
+
+Rscript ./scripts/extractclade$dataset.R
+
+echo;echo "Tree-based clade extraction complete..."
+
+# CLEANUP
+rm ./scripts/extractclade$dataset.R
+
+----------- cladeextract.sh end
+
+################################################################################
+################################################################################
+############################ TAXONOMY ASSIGNMENT ###############################
+################################################################################
+################################################################################
+
+# I like using CONSTAX2 for my taxonomy assignment because it integrates multiple methods to generate a "consensus" taxonomy that may be more robust than any single method alone
+#     - 10.1093/bioinformatics/btab347
+# This can supplement our open reference OTU taxonomy hypotheses with additional validation, and add taxonomy to the highest possible level to our de novo OTUs or ASV datasets.
+# It does unfortunately require a UNITE or SILVA style reference database to be used so if your db of choice is not in this format you will need to reformat it...
+
+# As a note- I would generally avoid anything that cannot be assigned at the "high level" i.e. Kingdom level to your taxonomic group!
+
+sbatch --export=outdir=amflsu,otulevel=0.97,dataset=amflsu,confidence=0.9,refdb=delavaux_lsu/V16_LSUDB_2024_UNITEAMF_PBJ.fasta,refdbhighlevel=delavaux_lsu/V16_LSUDB_2024_UNITE_PBJ.fasta,curation=AMFblast scripts/constax2.sh
+
+sbatch --export=outdir=funits,otulevel=0.97,dataset=funits,confidence=0.8,refdb=unite_its/sh_general_release_dynamic_04.04.2024.fasta,refdbhighlevel=unite_its/sh_general_release_dynamic_all_04.04.2024.fasta,curation= scripts/constax2.sh
+sbatch --export=outdir=funits,otulevel=asv,dataset=funits,confidence=0.8,refdb=unite_its/sh_general_release_dynamic_04.04.2024.fasta,refdbhighlevel=unite_its/sh_general_release_dynamic_all_04.04.2024.fasta,curation= scripts/constax2.sh
+
+----------------------------- constax2.sh start --------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=constax2
+#SBATCH --ntasks=1
+#SBATCH --time=1:00:00
+#SBATCH --mem=500G
+#SBATCH --output=./slurmoutputs/constax2.out
+#SBATCH --error=./slurmoutputs/constax2.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+
+module purge
+module load constax/2.0.17
+module list
+
+mkdir -p constaxoutputs
+mkdir -p constaxoutputs/${outdir}
+mkdir -p constaxoutputs/${outdir}/${otulevel}
+mkdir -p constaxoutputs/${outdir}//${otulevel}/taxonomyassignments
+
+constax -i ./finaloutputs/${outdir}/oturepseqs_${otulevel}_${dataset}${curation}.fasta \
+  -o ./constaxoutputs/${outdir}//${otulevel}/taxonomyassignments \
+  -f ./training_files \
+  -x ./taxonomy \
+  -d ${refdb} \
+  --high_level_db ${refdbhighlevel} \
+  -c ${confidence} \
+  -s True \
+  -p 0.97 \
+  --blast \
+  --train \
+  -n 16 \
+  --mem 400000
+
+# The most important file is the constax_taxonomy.txt file- we will copy this to finaloutputs for further review along with the summary of the assignments from each step
+cp constaxoutputs/${outdir}/${otulevel}/taxonomyassignments/constax_taxonomy.txt finaloutputs/${outdir}/constax_taxonomy_${dataset}_${otulevel}.tsv
+cp constaxoutputs/${outdir}/${otulevel}/taxonomyassignments/combined_taxonomy.txt finaloutputs/${outdir}/combined_taxonomy${dataset}_${otulevel}.tsv
+# Convert outputs to .csv
+cat finaloutputs/${outdir}/combined_taxonomy${dataset}_${otulevel}.tsv | tr '\t' ',' > finaloutputs/${outdir}/combined_taxonomy${dataset}_${otulevel}.csv
+cat finaloutputs/${outdir}/constax_taxonomy_${dataset}_${otulevel}.tsv | tr '\t' ',' > finaloutputs/${outdir}/constax_taxonomy_${dataset}_${otulevel}.csv
+
+# cleanup
+mv taxonomy constaxoutputs/${outdir}/${otulevel}/
+mv training_files constaxoutputs/${outdir}/${otulevel}/
+mv rdp_train.out constaxoutputs/${outdir}/${otulevel}/
+
+------------------------------ constax2.sh end ---------------------------------
+
+#***************** GREENGENES2 16S TAXONOMY (TREE-BASED) **********************#
+#****************************** START *****************************************#
+
+# When working with 16S amplicon sequences you can sub the greengenes2 reference database in Constax2 to use it the same way you would also use the SILVA database for the same purpose
+# Their recommended method is to use tree-based phylogeny decoration however
+#         - https://forum.qiime2.org/t/introducing-greengenes2-2022-10/25291
+# I use greengenes2 and silva in conjunction for my plant-microbiome work because the greengenes2 database currently (AS OF JUL 24) has a quirk that makes identification of chloroplasts and mitochondria difficult
+
+--------------------------- greengenes2.sh start -------------------------------
+
+#!/bin/bash
+#SBATCH --partition=iob_p
+#SBATCH --job-name=gg2taxonomyassignment
+#SBATCH --ntasks=1
+#SBATCH --time=12:00:00
+#SBATCH --mem=250G
+#SBATCH --output=./slurmOutputs/gg2taxonomy.out
+#SBATCH --error=./slurmOutputs/gg2taxonomy.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=128
+
+# for taxonomy assignment you need the following input:
+#	BIOM TABLE: converted from ./otu97table_clean.tsv
+#	SEQUENCE FILE: ./otu97repseqs_clean.fasta
+#	REFERENCE PHYLOGENY: ./2022.10.backbone.full-length.fna.qza which we have already downloaded but put here again for posterity
+
+# convert OTU table (.tsv) to biom format (.biom)
+
+module purge
+ml biom-format/2.1.14-foss-2022a
+module list
+
+# Remove the header so that biom convert can read the file
+tail -n +2 ./otu97table_clean.tsv > ./otu97table_clean_noheader.tsv
+
+biom convert -i ./otu97table_clean_noheader.tsv -o ./gg2files/otu97table_clean.json.biom --table-type="OTU table" --to-json
+
+# convert biom table (.biom) to qiime2 format (.qza)
+
+module purge
+module load QIIME2/2023.7
+module load q2-greengenes2/2023.3-QIIME2-2023.7
+module list
+
+qiime tools import --input-path ./gg2files/otu97table_clean.json.biom  --type 'FeatureTable[Frequency]' --input-format BIOMV100Format --output-path ./gg2files/otu97table_clean.biom.qza
+
+# convert repseq file (.fasta) to qiime2 format (.qza)
+
+qiime tools import --input-path ./otu97repseqs_clean.fasta --type 'FeatureData[Sequence]' --output-path ./gg2files/otu97repseqs_clean.fasta.qza
+
+# map the data to greengenes2
+
+qiime greengenes2 non-v4-16s \
+   --i-table ./gg2files/otu97table_clean.biom.qza \
+   --i-sequences ./gg2files/otu97repseqs_clean.fasta.qza \
+   --i-backbone ./2022.10.backbone.full-length.fna.qza \
+   --o-mapped-table ./gg2files/otu97table_clean.gg2.biom.qza \
+   --o-representatives ./gg2files/otu97repseqs_clean.gg2.fasta.qza
+
+# classify taxonomy
+
+qiime greengenes2 taxonomy-from-table \
+    --i-reference-taxonomy ./2022.10.taxonomy.asv.nwk.qza \
+    --i-table ./gg2files/otu97table_clean.gg2.biom.qza \
+    --o-classification ./gg2files/gg2.taxonomy.qza
+
+# export mapped repseqs
+
+qiime tools export --input-path ./gg2files/otu97repseqs_clean.gg2.fasta.qza --output-path ./gg2files/
+cat ./gg2files/dna-sequences.fasta  > ./gg2files/otu97repseqs_clean.gg2.fasta
+rm ./gg2files/dna-sequences.fasta
+
+# export mapped otu table
+
+qiime tools export --input-path ./gg2files/otu97table_clean.gg2.biom.qza --output-path ./gg2files/
+cat ./gg2files/feature-table.biom  > ./gg2files/otu97table_clean.gg2.biom
+rm ./gg2files/feature-table.biom
+
+
+# export taxonomic assignments
+qiime tools export --input-path ./gg2files/gg2.taxonomy.qza --output-path ./gg2files/
+cat ./gg2files/taxonomy.tsv  > ./gg2files/gg2.taxonomy.tsv
+rm ./gg2files/taxonomy.tsv
+
+# Convert .biom to .tsv
+
+biom convert -i ./gg2files/otu97table_clean.gg2.biom -o ./gg2files/otu97table_clean.gg2.tsv --to-tsv
+
+# Remove the header so that biom convert can read the file
+tail -n +2 ./gg2files/otu97table_clean.gg2.tsv > ./gg2files/otu97table_clean.gg2_noheader.tsv
+
+--------------------------- greengenes2.sh end -------------------------------
+
+#***************** GREENGENES2 16S TAXONOMY (TREE-BASED) **********************#
+#******************************** END *****************************************#
+
+# You've reached THE END.
+# You should now have a FINAL OTU table, FASTA file, and TAXONOMY file (and possibly even a PHYLOGENY) to do all of the real downstream analyses on.
+# GOOD LUCK BABE!

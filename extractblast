@@ -1,0 +1,83 @@
+# PBJ AUG 2023 EDITS: Altered the names of 'BLAST.R1.R2.ASVrepseqs_clean_cut.tsv' to reflect the lack of R1/R2 separation using the FLR3-FLR2 amplicon
+
+######################### Load required packages ###############################
+
+library(Biostrings) # Will need to install using BiocManager
+library(stringr)
+library(ape)
+
+############################ Define variables ##################################
+
+# OTU table inputs
+inputdata_qiime2 <- "./q2files/outdir.value.input/outputfiles/otutable_otulevel.value.input_dataset.value.input.tsv"
+inputdata_blast <- "./targetcuration/outdir.value.input/oturepseqs_otulevel.value.input_dataset.value.input_BLASTHITS.txt"
+
+# Filtered OTU table outputs
+# This name structure looks awful written with the dummy variables, it will come together and make sense as they are replaced with the correct variable names...
+output_otutable_blastpositivetsv <- "./targetcuration/outdir.value.input/otutable_otulevel.value.input_dataset.value.inputblastcuration.value.input.tsv"
+output_otutable_blastpositivecsv <- "./targetcuration/outdir.value.input/otutable_otulevel.value.input_dataset.value.inputblastcuration.value.input.csv"
+output_otutable_blastnegativetsv <- "./targetcuration/outdir.value.input/otutable_otulevel.value.input_dataset.value.inputnonblastcuration.value.input.tsv"
+output_otutable_blastnegativecsv <- "./targetcuration/outdir.value.input/otutable_otulevel.value.input_dataset.value.inputnonblastcuration.value.input.csv"
+
+# FASTA file input
+input_fastafile <- "./q2files/outdir.value.input/outputfiles/oturepseqs_otulevel.value.input_dataset.value.input.fasta"
+
+# Filtered fasta file outputs
+output_fasta_blastpositive <- "./targetcuration/outdir.value.input/oturepseqs_otulevel.value.input_dataset.value.inputblastcuration.value.input.fasta"
+output_fasta_blastnegative <- "./targetcuration/outdir.value.input/oturepseqs_otulevel.value.input_dataset.value.inputnonblastcuration.value.input.fasta"
+
+
+# Load ASV/OTU table and prune:
+print('Importing ASV/OTU table to be subset')
+
+# Note: Both ASV and OTU pipeline output files contain the header X.OTU.ID instead of X.ASV.ID
+
+# Import ASV/OTU table from qiime2
+taxunits <- read.delim(inputdata_qiime2,
+                sep='\t',
+                #skip=1, # The original delavaux script uses skip = 1 because they do not remove the 1st row text that comes when you export a biom file to .tsv, we do remove that line so we don't want to be skipping anything
+                header=TRUE)
+
+# Import list of ASVs/OTUs that were maintained after BLAST filtering
+BLAST.taxunits <- read.delim(inputdata_blast,
+                sep='\t',
+                header=FALSE)
+colnames(BLAST.taxunits) <- c("taxunits")
+
+# Subset the OTU/ASV table by whether they contain positive BLAST hits to AMF
+BLASTtaxunits <- subset(taxunits,X.OTU.ID %in% BLAST.taxunits$taxunits) # filter out non-AMF ASVs/OTUs using the list we generated above
+
+# Subset the OTU/ASV table by whether they did not have positive BLAST hits to AMF
+othertaxunits <- subset(taxunits,!(X.OTU.ID %in% BLAST.taxunits$taxunits)) # filter out non-AMF ASVs/OTUs using the list we generated above
+
+# Print the number of taxonomic units maintained and removed
+print(paste0(length(BLASTtaxunits$X.OTU.ID), " OTUs/ASVs were maintained after BLAST filtering"))
+print(paste0(length(othertaxunits$X.OTU.ID), " OTUs/ASVs were removed after BLAST filtering"))
+
+# Write both AMF and non-AMF data. You can use this to crosscheck
+write.table(BLASTtaxunits,file=output_otutable_blastpositivetsv,sep='\t',quote=FALSE,row.names=FALSE,col.names = TRUE)
+write.table(othertaxunits,file=output_otutable_blastnegativetsv,sep='\t',quote=FALSE,row.names=FALSE,col.names = TRUE)
+write.csv(BLASTtaxunits, file =  output_otutable_blastpositivecsv)
+write.csv(othertaxunits, file =  output_otutable_blastnegativecsv)
+
+print('Importing FASTA files to be subset')
+
+# Import ASV/OTU repseqs
+taxunits <- readDNAStringSet(input_fastafile)
+
+# Subset sequences that have a positive BLAST identification for AMF
+BLASTseqs <- taxunits[BLAST.taxunits$taxunits]
+
+# Subsete sequences that have a negative BLAST identification for AMF
+otherseqs <- taxunits[!(names(taxunits) %in% BLAST.taxunits$taxunits)]
+
+# Print the number of sequences maintained and removed
+# This is a sanity check that the output OTU and FASTA files have the same number of ASVs/OTUs
+print(paste0(length(BLASTseqs), " OTUs/ASV sequences were maintained after BLAST filtering"))
+print(paste0(length(otherseqs), " OTUs/ASVs sequences were removed after BLAST filtering"))
+
+# Write both AMF and non-AMF sequences. You can use this to cross-check.
+writeXStringSet(BLASTseqs, output_fasta_blastpositive,width=10000)
+writeXStringSet(otherseqs, output_fasta_blastnegative,width=10000)
+
+print('OTU/ASV tables and FASTA files have been subset by AMF BLAST score and exported')

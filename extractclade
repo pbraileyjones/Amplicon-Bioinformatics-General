@@ -1,0 +1,153 @@
+# Content alterations from Delavaux LSU (2022,2023,2024) pipelines
+# Input tree files
+#        - dummy variable added 'directory.value' to put in your specific output directory name used in previous steps
+# Subset only ASVs
+#        - dummy variable added to either subset ASVs or OTUs by name
+# Variable names containing 'ASVs' renamed renamed 'ASVs' to 'taxunits'
+
+######################### Load required packages ###############################
+
+library(ape)
+library(TreeTools)
+
+############################ Define variables ##################################
+
+# Define dataset / specific directory location
+outdir.value <- "outdir.input.value"
+otulevel.value <- "otulevel.input.value"
+taxaunit.value <- "taxaunit.input.value"
+dataset.value <- "dataset.value.input"
+treecuration.value <- "treecuration.value.input"
+cladestart.value <- "cladestart.input.value"
+cladeend.value <- "cladeend.input.value"
+treeroot.value <- "treeroot.input.value"
+blastcuration.value <- "blastcuration.input.value"
+
+# TEST INPUTS
+# Defind dataset / specific directory location
+outdir.value <- "amflsu"
+otulevel.value <- "0.97"
+taxaunit.value <- "OTU"
+dataset.value <- "amflsu"
+treecuration.value <- "AMFtree"
+cladestart.value <- "AM183920_Geosiphon_pyriformis"
+cladeend.value <- "MT832207_Acaulospora_tuberculata"
+treeroot.value <- "M11585.1_Oryza_sativa"
+blastcuration.value <- "AMFblast"
+
+############ Determine which ASVs/OTUs fall within the target clade ############
+
+print('Loading RAxML best trees...')
+
+# Path to tree files
+treeFiles <- dir(paste0('./phylogeny/', outdir.value, '/', otulevel.value, '/'), pattern='RAxML_bestTree*') # make list of the tree files output from RAxML
+# Check that you've called the correct set of files
+list(treeFiles)
+
+# Carry out clade extraction
+for (tree in treeFiles) {
+
+  print(paste0('Processing tree from subset: ',tree))
+
+  # Read each tree in the loop
+  mytree <- read.tree(paste0(paste0('./phylogeny/', outdir.value, '/', otulevel.value, '/'),tree))
+
+  # Root the tree
+  mytree.rooted <- RootTree(mytree, treeroot.value)
+
+  # Reformat the tree to Preorder format
+  mytree.rooted.preorder <- Preorder(mytree.rooted)
+
+  # Make data frame with tip names and numbers
+  tipDF <- data.frame('TipLabel'=TipLabels(mytree.rooted.preorder))
+  tipDF$TipNumber <- rownames(tipDF) # copy row names (integer IDs) to column
+
+  # get integer values of tips that define target clade edges
+  cladeStart <- as.integer(subset(tipDF,TipLabel==cladestart.value)$TipNumber) #Earliest tip in the target clade in the tree
+  cladeStop <- as.integer(subset(tipDF,TipLabel==cladeend.value)$TipNumber) # Latest tip in the target clade in the tree
+
+  # Determine the node for the target clade:
+  target.node <- MRCA(cladeStart,cladeStop,AllAncestors(parent=mytree.rooted.preorder$edge[,1],child=mytree.rooted.preorder$edge[,2]))
+
+  print('Extracting the target clade and identifying target taxonomic units...')
+
+  # Extract the target clade:
+  target.clade <- extract.clade(mytree.rooted.preorder,target.node)
+
+  # plotTree(target.clade)
+
+  # str(target.clade) # check how many tips
+
+  ### Extract names of ASVs from the target clade:
+  targetnames<-c(target.clade$tip.label)
+
+  ### Subset only those that start with 'OTU' or 'ASV' depending on the pipeline
+  hits<-targetnames[grep(taxaunit.value,targetnames)] # Dummy variable, replace with ASV or OTU
+
+  if (tree==treeFiles[1]) { target.taxunits <- hits } # if this is the first tree in the list, make a new vector to store the hits
+
+  else {target.taxunits <- append(target.taxunits, hits)} # otherwise, add the hits from this tree to the growing vector of target ASV names
+
+  #rm(mytree, mytree.rooted, mytree.rooted.preorder, tipDF, cladeStart, cladeStop, target.node, target.clade, targetnames, hits) # clean up except for the target.taxunits vector
+}
+
+# Check that you've output a sensible list
+head(target.taxunits)
+
+print('Filtering OTU/ASV tables...')
+
+# Load OTU/ASV table and be filtered:
+# This table will come either from the 'extractblast.sh' outputs (if BLAST filtering was performed) or from the 'headercleanup.sh' outputs
+inputotu <- paste0("./finaloutputs/", outdir.value, "/otutable_", otulevel.value, "_", dataset.value, blastcuration.value,".tsv")
+
+print(paste0('Input file name:', inputotu))
+
+otutable <- read.delim(inputotu,sep='\t',header=TRUE)
+
+# Subset otu table
+if (taxaunit.value == "OTU"){
+
+    # Subset only OTUs/ASVs that fall within the target phylogenetic clade
+    targettaxunits_otutable <- subset(otutable, X.OTU.ID %in% target.taxunits) # filter out non-target OTUs/ASVs using the list generated above
+    # Subset only OTUs/ASVs that fall within the target phylogenetic clade
+    othertaxunits_otutable <- subset(otutable,!(X.OTU.ID %in% target.taxunits)) # filter out non-targer OTUs/ASVs using the list generated above
+
+} else if (taxaunit.value == "ASV"){
+
+# Subset only OTUs/ASVs that fall within the target phylogenetic clade
+targettaxunits_otutable <- subset(otutable, X.ASV.ID %in% target.taxunits) # filter out non-target OTUs/ASVs using the list generated above
+# Subset only OTUs/ASVs that fall within the target phylogenetic clade
+othertaxunits_otutable <- subset(otutable,!(X.ASV.ID %in% target.taxunits)) # filter out non-targer OTUs/ASVs using the list generated above
+
+}
+
+print('Exporting filtered OTU/ASV tables...')
+
+# Export filtered OTU tables
+# .tsv export
+write.table(targettaxunits_otutable, file=paste0("./finaloutputs/", outdir.value, "/otutable_", otulevel.value, "_", dataset.value, treecuration.value, ".tsv"),sep='\t',quote=FALSE,row.names=FALSE,col.names = TRUE)
+write.table(othertaxunits_otutable, file=paste0("./finaloutputs/", outdir.value, "/otutable_", otulevel.value, "_", dataset.value, "non", treecuration.value, ".tsv"),sep='\t',quote=FALSE,row.names=FALSE,col.names = TRUE)
+# .csv export
+write.csv(targettaxunits_otutable, file=paste0("./finaloutputs/", outdir.value, "/otutable_", otulevel.value, "_", dataset.value, treecuration.value, ".csv"))
+write.csv(othertaxunits_otutable, file=paste0("./finaloutputs/", outdir.value, "/otutable_", otulevel.value, "_", dataset.value, "non", treecuration.value, ".csv"))
+
+print('Filtering OTU/ASV sequences...')
+
+print('Loading qiime2 output to be pruned - ASV rep. seqs')
+# Load ASV rep seqs and prune:
+inputfasta <- paste0("./finaloutputs/", outdir.value, "/oturepseqs_", otulevel.value, "_", dataset.value, blastcuration.value,".fasta")
+
+print(paste0('Input file name:', inputfasta))
+
+seqs <- read.FASTA(inputfasta, type = 'DNA')
+
+targetseqs <- seqs[unique(target.taxunits)]
+otherseqs <- seqs[setdiff(names(seqs),target.taxunits)]
+
+print('Exporting OTU/ASV sequences...')
+
+# Write to file:
+write.FASTA(targetseqs, file=paste0("./finaloutputs/", outdir.value, "/oturepseqs_", otulevel.value, "_", dataset.value, treecuration.value, ".fasta"))
+write.FASTA(otherseqs, file=paste0("./finaloutputs/", outdir.value, "/oturepseqs_", otulevel.value, "_", dataset.value, "non", treecuration.value, ".fasta"))
+
+print('Tree-based filtering complete. All files exported.')
